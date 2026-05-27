@@ -284,33 +284,6 @@ export function ProjectSidebar({ onProjectSelect, onDiffReady, onTimelineReady }
               <Upload />
               上传 PDF/图片/MIDI
             </Button>
-            <Button variant="ghost" size="sm" onClick={() => handleExport("midi")}>
-              <FileMusic />
-              导出 MIDI
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => handleExport("musicxml")}>
-              <Download />
-              导出 MusicXML
-            </Button>
-          </div>
-
-          <div className="mt-3 rounded-md border border-border p-2">
-            <div className="mb-2 text-xs font-medium">系统设置</div>
-            <label className="text-xs text-muted-foreground">
-              乐器音色
-              <select
-                className="mt-1 h-8 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
-                value={selectedProject?.instrument ?? "violin"}
-                onChange={(event) => handleInstrumentChange(event.target.value)}
-                disabled={!!working}
-              >
-                {INSTRUMENT_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
           </div>
 
           <div
@@ -356,6 +329,36 @@ export function ProjectSidebar({ onProjectSelect, onDiffReady, onTimelineReady }
                 </Button>
               </div>
             )}
+          </div>
+
+          <div className="mt-2 grid grid-cols-1 gap-2">
+            <Button variant="ghost" size="sm" onClick={() => handleExport("midi")}>
+              <FileMusic />
+              导出 MIDI
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => handleExport("musicxml")}>
+              <Download />
+              导出 MusicXML
+            </Button>
+          </div>
+
+          <div className="mt-3 rounded-md border border-border p-2">
+            <div className="mb-2 text-xs font-medium">系统设置</div>
+            <label className="text-xs text-muted-foreground">
+              乐器音色
+              <select
+                className="mt-1 h-8 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+                value={selectedProject?.instrument ?? "violin"}
+                onChange={(event) => handleInstrumentChange(event.target.value)}
+                disabled={!!working}
+              >
+                {INSTRUMENT_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
 
           {working && (

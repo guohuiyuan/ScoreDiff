@@ -27,6 +27,7 @@ export default function Home() {
   const [diffReport, setDiffReport] = useState<DiffReport | null>(null);
   const [timeline, setTimeline] = useState<PlaybackTimeline | null>(null);
   const [playbackTime, setPlaybackTime] = useState(0);
+  const [seekRequest, setSeekRequest] = useState({ time: 0, version: 0 });
   const [showDiffViewer, setShowDiffViewer] = useState(false);
   const [taskProgress, setTaskProgress] = useState<TaskProgress | null>(null);
 
@@ -66,6 +67,7 @@ export default function Home() {
             setShowDiffViewer(false);
             setTaskProgress(null);
             setPlaybackTime(0);
+            setSeekRequest((request) => ({ time: 0, version: request.version + 1 }));
           }}
           onDiffReady={(report) => {
             setDiffReport(report);
@@ -82,6 +84,10 @@ export default function Home() {
           noteGroups={scoreData?.note_groups ?? []}
           currentTime={playbackTime}
           colorMap={diffReport?.color_map}
+          onSeek={(time) => {
+            setPlaybackTime(time);
+            setSeekRequest((request) => ({ time, version: request.version + 1 }));
+          }}
           onScoreSaved={setScoreData}
         />
         {taskProgress && <TaskProgressBar progress={taskProgress} />}
@@ -93,6 +99,7 @@ export default function Home() {
           key={`${selectedProjectId ?? "none"}:${timeline?.total_duration ?? 0}`}
           timeline={timeline}
           instrument={selectedProject?.instrument ?? "violin"}
+          seekRequest={seekRequest}
           onTimeUpdate={setPlaybackTime}
         />
       </main>

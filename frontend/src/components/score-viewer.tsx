@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { Edit3, Minus, MousePointer2, Plus, Save, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,7 @@ interface ScoreViewerProps {
   noteGroups?: NoteGroup[];
   currentTime?: number;
   colorMap?: Record<string, string>;
+  onSeek?: (time: number) => void;
   onScoreSaved?: (score: ScoreData) => void;
 }
 
@@ -43,6 +44,9 @@ type OsmdInstance = {
   render: () => void;
   cursor?: {
     iterator?: OsmdIterator;
+    show?: () => void;
+    hide?: () => void;
+    update?: () => void;
   };
 };
 
@@ -71,85 +75,33 @@ export function ScoreViewer({
   noteGroups = [],
   currentTime = 0,
   colorMap,
+  onSeek,
   onScoreSaved,
 }: ScoreViewerProps) {
+  const printScrollRef = useRef<HTMLDivElement>(null);
   const printContainerRef = useRef<HTMLDivElement>(null);
   const osmdRef = useRef<OsmdInstance | null>(null);
   const dragRef = useRef<{ index: number; startY: number; startPitch: number } | null>(null);
   const draftIdRef = useRef(0);
-  const [mode, setMode] = useState<ViewMode>("edit");
+  const lastPrintActiveIndexRef = useRef(-1);
+  const [mode, setMode] = useState<ViewMode>("print");
   const [editMode, setEditMode] = useState<EditMode>("select");
   const [inputDuration, setInputDuration] = useState(BEAT_SECONDS);
   const [draft, setDraft] = useState<NoteGroup[]>(() => sortGroups(noteGroups.map(normalizeClientGroup)));
   const [selectedIndex, setSelectedIndex] = useState<number | null>(draft.length ? 0 : null);
+  const [printRevision, setPrintRevision] = useState(0);
+  const [printReadyRevision, setPrintReadyRevision] = useState(0);
   const [loadingPrint, setLoadingPrint] = useState(false);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const viewMode = musicxmlUrl ? mode : "edit";
 
-  useEffect(() => {
-    if (mode !== "print") {
-      if (osmdRef.current) {
-        osmdRef.current.clear?.();
-        osmdRef.current = null;
-      }
-      return;
-    }
-    if (!musicxmlUrl || !printContainerRef.current) return;
-
-    let cancelled = false;
-
-    async function loadScore() {
-      setLoadingPrint(true);
-      setError(null);
-
-      try {
-        const { OpenSheetMusicDisplay } = await import("opensheetmusicdisplay");
-        if (cancelled) return;
-
-        osmdRef.current?.clear?.();
-        const container = printContainerRef.current;
-        if (!container) return;
-        const osmd = new OpenSheetMusicDisplay(container, {
-          autoResize: true,
-          drawTitle: true,
-          drawComposer: true,
-          drawPartNames: true,
-          drawMeasureNumbers: true,
-          drawingParameters: "default",
-        }) as unknown as OsmdInstance;
-
-        osmdRef.current = osmd;
-        const url = fileUrl(musicxmlUrl);
-        if (!url) return;
-        await osmd.load(url);
-        if (cancelled) return;
-
-        osmd.render();
-        if (colorMap) applyColorMap(osmd, colorMap);
-      } catch (e: unknown) {
-        if (!cancelled) setError(e instanceof Error ? e.message : "谱面加载失败");
-      } finally {
-        if (!cancelled) setLoadingPrint(false);
-      }
-    }
-
-    loadScore();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [mode, musicxmlUrl, colorMap]);
-
-  const measures = useMemo(() => {
-    const nums = Array.from(new Set(draft.map((g) => g.measure || 1))).sort((a, b) => a - b);
-    return nums.length ? nums : [1];
-  }, [draft]);
+  const measureNums = Array.from(new Set(draft.map((g) => g.measure || 1))).sort((a, b) => a - b);
+  const measures = measureNums.length ? measureNums : [1];
   const systemCount = Math.max(1, Math.ceil(measures.length / MEASURES_PER_SYSTEM));
-  const activeIndex = useMemo(() => {
-    if (!draft.length) return -1;
-    return draft.findIndex((group) => currentTime >= group.start && currentTime < group.end);
-  }, [currentTime, draft]);
+  const activeIndex = draft.findIndex((group) => currentTime >= group.start && currentTime < group.end);
+  const activeGroup = activeIndex >= 0 ? draft[activeIndex] : null;
 
   const selected = selectedIndex !== null ? draft[selectedIndex] : null;
   const visibleColumns = Math.min(MEASURES_PER_SYSTEM, Math.max(1, measures.length));
@@ -277,6 +229,7 @@ export function ScoreViewer({
       const score = await updateScore(projectId, draft);
       setDraft(sortGroups(score.note_groups.map(normalizeClientGroup)));
       setDirty(false);
+      setPrintRevision((current) => current + 1);
       onScoreSaved?.(score);
     } catch (e) {
       setError(e instanceof Error ? e.message : "保存失败");
@@ -315,6 +268,158 @@ export function ScoreViewer({
     }
     dragRef.current = null;
   }
+
+  function handlePrintPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!draft.length) return;
+    const index = nearestPrintIndex(event);
+    const group = draft[index];
+    if (!group) return;
+    setEditMode("select");
+    setSelectedIndex(index);
+    onSeek?.(group.start);
+    syncPrintCursor(index);
+    scrollPrintToIndex(index, "smooth");
+  }
+
+  function nearestPrintIndex(event: ReactPointerEvent<HTMLDivElement>) {
+    const scroller = printScrollRef.current;
+    if (!scroller) return selectedIndex ?? 0;
+    const rect = scroller.getBoundingClientRect();
+    const y = event.clientY - rect.top + scroller.scrollTop;
+    const x = event.clientX - rect.left + scroller.scrollLeft;
+    const yRatio = Math.max(0, Math.min(1, y / Math.max(1, scroller.scrollHeight)));
+    const xRatio = Math.max(0, Math.min(1, (x - 80) / Math.max(1, scroller.scrollWidth - 160)));
+    const measure = measures[Math.min(measures.length - 1, Math.round(yRatio * (measures.length - 1)))] ?? 1;
+    const beat = clampBeat(1 + xRatio * BEATS_PER_MEASURE);
+    let bestIndex = selectedIndex ?? 0;
+    let bestScore = Number.POSITIVE_INFINITY;
+    draft.forEach((group, index) => {
+      const score = Math.abs(group.measure - measure) * 8 + Math.abs(group.beat - beat);
+      if (score < bestScore) {
+        bestScore = score;
+        bestIndex = index;
+      }
+    });
+    return bestIndex;
+  }
+
+  function syncPrintCursor(index: number) {
+    const cursor = osmdRef.current?.cursor;
+    const iterator = cursor?.iterator;
+    if (!cursor || !iterator || index < 0) {
+      cursor?.hide?.();
+      return;
+    }
+    try {
+      iterator.reset();
+      for (let i = 0; i < index && !iterator.endReached; i++) {
+        iterator.moveToNext();
+      }
+      cursor.show?.();
+      cursor.update?.();
+    } catch {
+    }
+  }
+
+  function scrollPrintToIndex(index: number, behavior: ScrollBehavior) {
+    const scroller = printScrollRef.current;
+    const group = draft[index];
+    if (!scroller || !group || measures.length <= 1) return;
+    const measureIndex = Math.max(0, measures.indexOf(group.measure));
+    const ratio = measureIndex / Math.max(1, measures.length - 1);
+    const top = ratio * Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    scroller.scrollTo({ top: Math.max(0, top - 80), behavior });
+  }
+
+  useEffect(() => {
+    if (viewMode !== "print") {
+      if (osmdRef.current) {
+        osmdRef.current.clear?.();
+        osmdRef.current = null;
+      }
+      return;
+    }
+    if (!musicxmlUrl || !printContainerRef.current) return;
+
+    let cancelled = false;
+
+    async function loadScore() {
+      setLoadingPrint(true);
+      setError(null);
+
+      try {
+        const { OpenSheetMusicDisplay } = await import("opensheetmusicdisplay");
+        if (cancelled) return;
+
+        osmdRef.current?.clear?.();
+        const container = printContainerRef.current;
+        if (!container) return;
+        const osmd = new OpenSheetMusicDisplay(container, {
+          autoResize: true,
+          drawTitle: true,
+          drawComposer: true,
+          drawPartNames: true,
+          drawMeasureNumbers: true,
+          drawingParameters: "default",
+        }) as unknown as OsmdInstance;
+
+        osmdRef.current = osmd;
+        const url = fileUrl(musicxmlUrl);
+        if (!url) return;
+        await osmd.load(url);
+        if (cancelled) return;
+
+        osmd.render();
+        setPrintReadyRevision((current) => current + 1);
+      } catch (e: unknown) {
+        if (!cancelled) setError(e instanceof Error ? e.message : "谱面加载失败");
+      } finally {
+        if (!cancelled) setLoadingPrint(false);
+      }
+    }
+
+    loadScore();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [viewMode, musicxmlUrl, printRevision]);
+
+  useEffect(() => {
+    if (viewMode !== "print" || !colorMap || !osmdRef.current) return;
+    applyColorMap(osmdRef.current, colorMap);
+  }, [viewMode, colorMap, printReadyRevision]);
+
+  useEffect(() => {
+    if (viewMode !== "print") return;
+    if (activeIndex === lastPrintActiveIndexRef.current && printReadyRevision > 0) return;
+    lastPrintActiveIndexRef.current = activeIndex;
+    const cursor = osmdRef.current?.cursor;
+    const iterator = cursor?.iterator;
+    if (!cursor || !iterator || activeIndex < 0) {
+      cursor?.hide?.();
+      return;
+    }
+    try {
+      iterator.reset();
+      for (let i = 0; i < activeIndex && !iterator.endReached; i++) {
+        iterator.moveToNext();
+      }
+      cursor.show?.();
+      cursor.update?.();
+    } catch {
+    }
+
+    const scroller = printScrollRef.current;
+    const group = draft[activeIndex];
+    if (!scroller || !group) return;
+    const localMeasures = Array.from(new Set(draft.map((item) => item.measure || 1))).sort((a, b) => a - b);
+    if (localMeasures.length <= 1) return;
+    const measureIndex = Math.max(0, localMeasures.indexOf(group.measure));
+    const ratio = measureIndex / Math.max(1, localMeasures.length - 1);
+    const top = ratio * Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    scroller.scrollTo({ top: Math.max(0, top - 80), behavior: "auto" });
+  }, [viewMode, activeIndex, printReadyRevision, draft]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -373,9 +478,9 @@ export function ScoreViewer({
           <div className="inline-flex rounded-md border border-border bg-muted/50 p-0.5">
             <button
               type="button"
-              aria-pressed={mode === "edit"}
+              aria-pressed={viewMode === "edit"}
               className={`h-7 px-3 rounded-sm text-xs transition-colors ${
-                mode === "edit" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                viewMode === "edit" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
               }`}
               onClick={() => setMode("edit")}
             >
@@ -383,16 +488,17 @@ export function ScoreViewer({
             </button>
             <button
               type="button"
-              aria-pressed={mode === "print"}
+              aria-pressed={viewMode === "print"}
               className={`h-7 px-3 rounded-sm text-xs transition-colors ${
-                mode === "print" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                viewMode === "print" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
               }`}
               onClick={() => setMode("print")}
+              disabled={!musicxmlUrl}
             >
               排版谱
             </button>
           </div>
-          {mode === "edit" && (
+          {viewMode === "edit" && (
             <div className="inline-flex rounded-md border border-border bg-background p-0.5">
               <button
                 type="button"
@@ -412,7 +518,7 @@ export function ScoreViewer({
               </button>
             </div>
           )}
-          {mode === "edit" && (
+          {viewMode === "edit" && (
             <div className="hidden md:flex items-center gap-1">
               {DURATIONS.map((duration, index) => (
                 <button
@@ -434,11 +540,11 @@ export function ScoreViewer({
 
         <div className="flex items-center gap-2">
           {dirty && <span className="text-xs text-amber-700">未保存</span>}
-          <Button variant="ghost" size="sm" onClick={addNote} disabled={mode !== "edit"}>
+          <Button variant="ghost" size="sm" onClick={addNote} disabled={!draft.length}>
             <Plus />
             添加
           </Button>
-          <Button variant="ghost" size="sm" onClick={deleteSelected} disabled={mode !== "edit" || selectedIndex === null}>
+          <Button variant="ghost" size="sm" onClick={deleteSelected} disabled={selectedIndex === null}>
             <Trash2 />
             删除
           </Button>
@@ -455,13 +561,23 @@ export function ScoreViewer({
         </div>
       )}
 
-      <div className="flex-1 min-h-0 overflow-auto" style={{ display: mode === "print" ? "block" : "none" }}>
+      <div
+        ref={printScrollRef}
+        className="flex-1 min-h-0 overflow-auto cursor-pointer"
+        style={{ display: viewMode === "print" ? "block" : "none" }}
+        onPointerDown={handlePrintPointerDown}
+      >
         {loadingPrint && (
           <div className="p-3 text-sm text-muted-foreground text-center">加载谱面中...</div>
         )}
+        {activeGroup && (
+          <div className="sticky top-3 z-10 mx-auto mt-3 w-fit rounded-full border border-teal-500/40 bg-teal-50 px-3 py-1 text-xs font-medium text-teal-800 shadow-sm">
+            正在播放：第 {activeGroup.measure} 小节 第 {activeGroup.beat} 拍 · {activeGroup.target_names.join("/") || "休止"}
+          </div>
+        )}
         <div ref={printContainerRef} className="min-h-full p-4" />
       </div>
-      {mode === "edit" && (
+      {viewMode === "edit" && (
         <div className="flex-1 min-h-0 flex flex-col">
           <div className="flex-1 min-w-0 overflow-auto bg-muted/20">
             <svg
@@ -586,7 +702,9 @@ export function ScoreViewer({
               })}
             </svg>
           </div>
-
+        </div>
+      )}
+      {draft.length > 0 && (
           <div className="border-t border-border bg-background px-3 py-2">
             <div className="grid gap-2 xl:grid-cols-[auto_auto_1fr] xl:items-center">
               <div className="flex items-center gap-1">
@@ -688,7 +806,6 @@ export function ScoreViewer({
               )}
             </div>
           </div>
-        </div>
       )}
     </div>
   );
