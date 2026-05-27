@@ -5,9 +5,10 @@
 ## 功能概览
 
 - 项目管理：创建、选择、删除项目；删除项目会同步清理谱面、录音、分析结果和生成文件。
-- 乐谱来源：支持 MusicXML、MIDI、MP3，以及 PDF/图片触发 OMR 流程。
-- 互相转换：支持 MIDI 和 MP3 互转，并生成 MusicXML、MIDI、MP3 导出文件。
+- 乐谱来源：支持 MusicXML、MIDI，以及 PDF/图片触发 OMR 流程。
+- 导出：支持从 MusicXML 生成 MIDI 导出。
 - OMR 识别：PDF/图片优先走 HOMR；不可用时尝试 Audiveris；最后回退到 OpenCV 预处理和五线谱线检测。
+- 粘贴上传：侧边栏支持 Ctrl+V 粘贴乐谱截图，可累积多张后一次上传识别。
 - 可编辑电子谱：多行五线谱浏览，选择模式、音符输入模式、时值工具、点谱输入、方向键改音高、底部检查器编辑小节/拍位/时值。
 - MuseScore 风格编辑逻辑：先选时值，再输入音符；选中音符后改音高、位置和时值；保存后重建 MusicXML/MIDI。
 - 时值网格修正：前端限制音符不跨出当前 4/4 小节，后端导出时按小节补休止并裁剪越界时值。
@@ -24,8 +25,8 @@
 | 谱面渲染 | 自绘 SVG 编辑谱, OpenSheetMusicDisplay 印刷谱预览 |
 | 播放 | Web Audio API, requestAnimationFrame, Base UI Slider |
 | 后端 | FastAPI, Pydantic, SQLModel, SQLite/aiosqlite, fakeredis |
-| 乐谱解析与转换 | music21, pretty_midi, ffmpeg, soundfile |
-| OMR | HOMR, Audiveris, OpenCV, Pillow |
+| 乐谱解析与转换 | music21, pretty_midi, pymupdf |
+| OMR | HOMR (uvx), Audiveris, OpenCV |
 | 音频分析 | librosa, numpy, scipy |
 | 包管理 | uv (后端), npm (前端) |
 
@@ -45,7 +46,11 @@
 
 ### 2. 上传乐谱源
 
-前端使用浏览器文件选择器上传 `.musicxml`、`.xml`、`.mid`、`.midi`、`.mp3`、`.pdf`、`.png`、`.jpg`、`.jpeg`、`.webp`。后端使用 `UploadFile` 接收文件，把原始文件保存到 `backend/data/uploads/`，并在 `score_files` 表中记录文件类型和路径。
+前端支持两种上传方式：
+- 文件选择器：上传 `.musicxml`、`.xml`、`.mid`、`.midi`、`.pdf`、`.png`、`.jpg`、`.jpeg`、`.webp`。
+- 粘贴上传：在侧边栏底部的粘贴区域按 Ctrl+V 粘贴乐谱截图，可多次粘贴累积多张，点击"上传"一次性处理。
+
+后端使用 `UploadFile` 接收文件，把原始文件保存到 `backend/data/uploads/`，并在 `score_files` 表中记录文件类型和路径。
 
 涉及技术：
 - 前端：FormData、Fetch API、文件扩展名限制
@@ -60,27 +65,24 @@
 |---|---|---|
 | MusicXML / XML | `music21.converter.parse` 解析音符，再导出 MIDI | note_groups, MusicXML, MIDI |
 | MIDI | music21 解析 MIDI 得到音符组，再导出 MusicXML | note_groups, MusicXML, MIDI |
-| MP3 | librosa pYIN 提取单声部音高，pretty_midi 写 MIDI，再用 music21 转 MusicXML | note_groups, MIDI, MusicXML |
-| PDF / 图片 | HOMR 识别 MusicXML；HOMR 不可用时尝试 Audiveris；都不可用时 OpenCV 预处理和五线谱线检测 | MusicXML 或预处理结果 |
+| PDF / 图片 | pymupdf 转 PNG，HOMR 识别 MusicXML；HOMR 不可用时尝试 Audiveris；都不可用时 OpenCV 预处理 | MusicXML 或预处理结果 |
 
 解析后的核心结构是 `note_groups`。每个元素包含小节、拍位、起止时间、目标 MIDI 音高、音名和类型。后续播放、编辑、评分和 Diff 都围绕这个结构工作。
 
 涉及技术：
 - MusicXML/MIDI：music21
-- MP3 到 MIDI：librosa pYIN、pretty_midi
-- OMR：HOMR CLI、可选 `uvx homr`、Audiveris CLI、OpenCV、Pillow
+- PDF 转图片：pymupdf (fitz)
+- OMR：HOMR CLI（通过 `uvx homr` 或直接 `homr`）、Audiveris CLI、OpenCV
 - 数据落库：SQLModel `note_groups`
 
-### 4. MIDI 和 MP3 互相转换
+### 4. 导出 MIDI
 
-前端点击「MIDI」或「MP3」会调用 `POST /api/projects/{id}/convert?target=midi|mp3`。
+前端点击「导出 MIDI」会调用 `POST /api/projects/{id}/convert?target=midi`。
 
-生成 MIDI 时优先复用已有 MIDI；如果只有 MusicXML，用 music21 转 MIDI；如果只有 MP3，先用 librosa + pretty_midi 生成 MIDI，再转 MusicXML。生成 MP3 时先确保项目有 MIDI，再把 MIDI 渲染成 WAV，最后用 ffmpeg 编码为 MP3。
+生成 MIDI 时优先复用已有 MIDI；如果只有 MusicXML，用 music21 转 MIDI。
 
 涉及技术：
 - MIDI/MusicXML：music21、pretty_midi
-- 音频合成：numpy、soundfile
-- MP3 编码：ffmpeg/libmp3lame
 - 文件访问：FastAPI StaticFiles 暴露 `/files/...`
 
 ### 5. 编辑电子五线谱
@@ -91,7 +93,7 @@
 - 「选择」模式：点选音符，上下拖动或方向键调整音高。
 - 「输入」模式：先选择 16分、8分、4分、2分、全音等时值，再点击五线谱写入音符。
 - 底部检查器：编辑选中音符的音高、小节、拍位、时值。
-- 保存：调用 `PUT /api/projects/{id}/score`。
+- 保存：调用 `PUT /api/projects/{id}/score`，后端重新生成 MusicXML/MIDI。
 
 为避免“音的长度不对”，前端保存前会把拍位量化到 1/4 拍，并限制音符结尾不能超过当前 4/4 小节。后端导出 MusicXML 时按小节顺序写入音符和休止符，填满空拍，并裁剪越界时值，避免 MusicXML 里出现重叠或跨小节导致的时值异常。
 
@@ -191,11 +193,43 @@ ScoreDiff/
 - Python 3.10+
 - Node.js 18+
 - uv
-- ffmpeg，生成 MP3 时需要
-- HOMR，可选但推荐，用于 PDF/图片 OMR
-- Audiveris，可选，HOMR 不可用时作为 OMR 回退
+- HOMR，推荐安装，用于 PDF/图片 OMR 识别
 
-HOMR 可安装为命令行工具。后端会自动探测 `homr`；如果希望通过 `uvx homr <image>` 临时运行，可以设置 `SCOREDIFF_ENABLE_UVX_HOMR=1`。识别顺序是 HOMR -> Audiveris -> OpenCV 预处理。
+### 配置 HOMR
+
+HOMR 是将乐谱图片识别为 MusicXML 的核心工具。后端会自动探测可用的 HOMR 执行方式。
+
+**方式一：通过 uvx 临时运行（推荐，无需安装）**
+
+只要系统有 `uv`（后端包管理器），`uvx` 命令就可用。后端会自动调用 `uvx homr <image>` 运行 HOMR，首次运行时 uvx 会自动下载依赖。
+
+```bash
+# 验证 uvx 可用
+uvx homr --help
+```
+
+**方式二：全局安装 homr**
+
+```bash
+pip install homr
+# 或
+pipx install homr
+```
+
+安装后确认 `homr` 在 PATH 中：
+
+```bash
+homr --help
+```
+
+**方式三：Docker**
+
+HOMR 提供 CPU 和 GPU 两种 Docker 镜像，适合服务器部署。参考 [HOMR 仓库](https://github.com/liebharc/homr)。
+
+**注意事项：**
+- HOMR 只接受 PNG/JPG 图片，不直接接受 PDF。后端会自动用 pymupdf 将 PDF 转为 PNG 再送入 HOMR。
+- HOMR 需要 Python 3.11+，但通过 uvx 运行时会自动使用隔离环境，不影响后端的 Python 3.10。
+- 如果 HOMR 不可用，系统会尝试 Audiveris；都不可用时回退到 OpenCV 预处理（只检测五线谱线，不生成 MusicXML）。
 
 ### 启动后端
 
@@ -224,10 +258,10 @@ npm run dev
 
 1. 打开前端页面。
 2. 点击「新建」创建项目。
-3. 选中项目，上传 MusicXML、MIDI、MP3、PDF 或图片。
-4. 系统解析为 `note_groups`，并生成 MusicXML/MIDI；需要时点击「MIDI」或「MP3」导出。
+3. 选中项目，上传 MusicXML、MIDI、PDF 或图片（也可以在粘贴区域 Ctrl+V 粘贴乐谱截图）。
+4. 系统解析为 `note_groups`，并生成 MusicXML/MIDI；需要时点击「导出 MIDI」下载。
 5. 在「编辑谱」模式里用选择/输入模式修正音符，底部检查器可改音高、小节、拍位和时值。
-6. 点击「保存」，后端重新生成 MusicXML/MIDI/MP3。
+6. 点击「保存」，后端重新生成 MusicXML/MIDI。
 7. 点击播放条播放电子谱，当前音符会动态高亮并有声音。
 8. 录制演奏，等待异步分析完成后查看 Diff。
 9. 不再需要的项目可在项目列表直接删除。
@@ -242,10 +276,10 @@ npm run dev
 | DELETE | `/api/projects/{id}` | 删除项目和关联数据 |
 | POST | `/api/projects/{id}/score-file` | 上传乐谱源文件 |
 | POST | `/api/projects/{id}/ocr` | PDF/图片 OMR 识别 |
-| POST | `/api/projects/{id}/parse-score` | 解析 MusicXML/MIDI/MP3 为电子谱 |
+| POST | `/api/projects/{id}/parse-score` | 解析 MusicXML/MIDI 为电子谱 |
 | GET | `/api/projects/{id}/score` | 获取谱面数据 |
 | PUT | `/api/projects/{id}/score` | 保存修正后的电子谱并重新导出 |
-| POST | `/api/projects/{id}/convert?target=midi\|mp3` | MIDI/MP3 转换 |
+| POST | `/api/projects/{id}/convert?target=midi` | 导出 MIDI |
 | GET | `/api/projects/{id}/playback-timeline` | 播放时间线 |
 | POST | `/api/projects/{id}/performances` | 上传录音 |
 | GET | `/api/projects/{id}/recordings` | 录音列表 |
@@ -286,6 +320,7 @@ npm run build
 - OpenSheetMusicDisplay 用于 MusicXML 的排版预览，不负责核心编辑。
 - Web Audio 播放的是根据 `playback-timeline` 合成的参考音，不是录音文件回放。
 - PDF/图片 OMR 是否能直接生成 MusicXML 取决于本机是否安装 HOMR 或 Audiveris；没有 OMR 引擎时仍会做 OpenCV 预处理并返回可诊断结果。
+- PDF 文件会先通过 pymupdf 转为 300dpi PNG 再送入 HOMR（HOMR 不直接支持 PDF）。
 - 后端导出 MusicXML 时会补齐小节内休止符，保证时值落在 4/4 小节网格上。
 
 ## 许可证

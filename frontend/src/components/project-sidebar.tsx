@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Download, FileMusic, Music2, Plus, Trash2, Upload } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Download, FileMusic, ImagePlus, Music2, Plus, Trash2, Upload, X } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import {
@@ -21,6 +21,11 @@ import {
   type ScoreData,
 } from "@/lib/api";
 
+interface PastedImage {
+  file: File;
+  preview: string;
+}
+
 interface ProjectSidebarProps {
   onProjectSelect?: (score: ScoreData | null, projectId: string | null) => void;
   onDiffReady?: (report: DiffReport | null) => void;
@@ -32,6 +37,8 @@ export function ProjectSidebar({ onProjectSelect, onDiffReady, onTimelineReady }
   const [selected, setSelected] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState<string | null>(null);
+  const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
+  const pasteBoxRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetchProjects()
@@ -39,6 +46,12 @@ export function ProjectSidebar({ onProjectSelect, onDiffReady, onTimelineReady }
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    return () => {
+      pastedImages.forEach((img) => URL.revokeObjectURL(img.preview));
+    };
+  }, [pastedImages]);
 
   async function handleCreate() {
     const title = prompt("项目名称:");
@@ -134,6 +147,54 @@ export function ProjectSidebar({ onProjectSelect, onDiffReady, onTimelineReady }
     }
   }
 
+  function handlePaste(e: React.ClipboardEvent) {
+    if (!selected) return;
+    const items = e.clipboardData.items;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.type.startsWith("image/")) {
+        e.preventDefault();
+        const blob = item.getAsFile();
+        if (blob) {
+          const ext = blob.type.split("/")[1] || "png";
+          const file = new File([blob], `paste-${Date.now()}-${pastedImages.length}.${ext}`, { type: blob.type });
+          const preview = URL.createObjectURL(blob);
+          setPastedImages((prev) => [...prev, { file, preview }]);
+        }
+      }
+    }
+  }
+
+  function removePastedImage(index: number) {
+    setPastedImages((prev) => {
+      URL.revokeObjectURL(prev[index].preview);
+      return prev.filter((_, i) => i !== index);
+    });
+  }
+
+  async function handleUploadPasted() {
+    if (!selected || pastedImages.length === 0) return;
+    setWorking(`上传 ${pastedImages.length} 张图片中...`);
+    try {
+      for (let i = 0; i < pastedImages.length; i++) {
+        setWorking(`上传第 ${i + 1}/${pastedImages.length} 张...`);
+        await uploadScoreFile(selected, pastedImages[i].file);
+      }
+      setWorking("正在识别乐谱...");
+      const omr = await runOcr(selected);
+      if (omr.status !== "success") {
+        throw new Error(omr.message || "OMR 未生成可编辑谱");
+      }
+      await parseScore(selected);
+      await refreshScore(selected);
+      pastedImages.forEach((img) => URL.revokeObjectURL(img.preview));
+      setPastedImages([]);
+      setWorking(null);
+    } catch (error) {
+      setWorking(error instanceof Error ? error.message : "上传失败");
+    }
+  }
+
   return (
     <div className="h-full flex flex-col overflow-hidden">
       <div className="p-3 border-b border-border flex items-center justify-between flex-shrink-0">
@@ -195,6 +256,52 @@ export function ProjectSidebar({ onProjectSelect, onDiffReady, onTimelineReady }
               导出 MIDI
             </Button>
           </div>
+
+          <div
+            ref={pasteBoxRef}
+            tabIndex={0}
+            onPaste={handlePaste}
+            className="mt-2 rounded-md border-2 border-dashed border-border p-2 text-center text-xs text-muted-foreground focus:border-primary focus:outline-none transition-colors cursor-text"
+          >
+            {pastedImages.length === 0 ? (
+              <div className="flex items-center justify-center gap-1 py-1">
+                <ImagePlus className="size-3.5" />
+                <span>点击此处后 Ctrl+V 粘贴乐谱图片</span>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <div className="flex flex-wrap gap-1">
+                  {pastedImages.map((img, index) => (
+                    <div key={img.preview} className="relative group/thumb">
+                      <img
+                        src={img.preview}
+                        alt={`粘贴图片 ${index + 1}`}
+                        className="h-12 w-auto rounded border border-border object-cover"
+                      />
+                      <button
+                        type="button"
+                        className="absolute -top-1 -right-1 size-4 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center opacity-0 group-hover/thumb:opacity-100 transition-opacity"
+                        onClick={() => removePastedImage(index)}
+                      >
+                        <X className="size-2.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <Button
+                  variant="default"
+                  size="sm"
+                  className="w-full"
+                  onClick={handleUploadPasted}
+                  disabled={!!working}
+                >
+                  <Upload className="mr-1" />
+                  上传 {pastedImages.length} 张图片
+                </Button>
+              </div>
+            )}
+          </div>
+
           {working && (
             <p className="mt-2 text-xs text-muted-foreground leading-snug">{working}</p>
           )}
