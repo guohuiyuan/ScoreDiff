@@ -15,6 +15,7 @@ import {
   pollTaskProgress,
   type DiffReport,
   type PlaybackTimeline,
+  type Project,
   type ScoreData,
   type TaskProgress,
 } from "@/lib/api";
@@ -22,6 +23,7 @@ import {
 export default function Home() {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [scoreData, setScoreData] = useState<ScoreData | null>(null);
+  const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [diffReport, setDiffReport] = useState<DiffReport | null>(null);
   const [timeline, setTimeline] = useState<PlaybackTimeline | null>(null);
   const [playbackTime, setPlaybackTime] = useState(0);
@@ -56,8 +58,9 @@ export default function Home() {
     <div className="h-full flex">
       <aside className="w-64 border-r border-border flex-shrink-0 h-full overflow-hidden">
         <ProjectSidebar
-          onProjectSelect={(score, projectId) => {
+          onProjectSelect={(score, projectId, project) => {
             setSelectedProjectId(projectId);
+            setSelectedProject(project ?? null);
             setScoreData(score);
             setDiffReport(null);
             setShowDiffViewer(false);
@@ -89,6 +92,7 @@ export default function Home() {
         <PlaybackBar
           key={`${selectedProjectId ?? "none"}:${timeline?.total_duration ?? 0}`}
           timeline={timeline}
+          instrument={selectedProject?.instrument ?? "violin"}
           onTimeUpdate={setPlaybackTime}
         />
       </main>

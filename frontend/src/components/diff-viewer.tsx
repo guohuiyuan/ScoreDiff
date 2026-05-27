@@ -22,7 +22,7 @@ export function DiffViewer({ diffReport, onClose }: DiffViewerProps) {
     <div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-8">
       <div className="bg-background border border-border rounded-lg shadow-lg w-full max-w-4xl max-h-[90vh] flex flex-col">
         <div className="flex items-center justify-between p-4 border-b border-border">
-          <h2 className="text-lg font-semibold">Diff 详情</h2>
+          <h2 className="text-lg font-semibold">差异详情</h2>
           <button
             onClick={onClose}
             className="text-muted-foreground hover:text-foreground text-xl leading-none"

@@ -96,6 +96,23 @@ def _make_music21_element(group: dict, quarter_length: float):
     return chord.Chord(pitches, quarterLength=quarter_length)
 
 
+def _instrument_for_name(instrument_name: str):
+    instrument_map = {
+        "violin": instrument.Violin,
+        "piano": instrument.Piano,
+        "flute": instrument.Flute,
+        "guitar": instrument.Guitar,
+        "cello": instrument.Violoncello,
+        "clarinet": instrument.Clarinet,
+    }
+    instrument_class = instrument_map.get(instrument_name.lower())
+    if instrument_class:
+        return instrument_class()
+    generic = instrument.Instrument()
+    generic.instrumentName = instrument_name
+    return generic
+
+
 def build_score_from_note_groups(
     note_groups: list[dict],
     bpm: float = 120.0,
@@ -108,10 +125,7 @@ def build_score_from_note_groups(
     score.metadata.title = title
 
     part = stream.Part()
-    if instrument_name.lower() == "violin":
-        part.insert(0, instrument.Violin())
-    else:
-        part.partName = instrument_name
+    part.insert(0, _instrument_for_name(instrument_name))
 
     grouped: dict[int, list[dict]] = {}
     for group in note_groups:

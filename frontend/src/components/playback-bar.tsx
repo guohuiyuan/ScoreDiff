@@ -7,10 +7,20 @@ import { type PlaybackTimeline } from "@/lib/api";
 
 interface PlaybackBarProps {
   timeline: PlaybackTimeline | null;
+  instrument?: string;
   onTimeUpdate?: (time: number) => void;
 }
 
-export function PlaybackBar({ timeline, onTimeUpdate }: PlaybackBarProps) {
+type InstrumentProfile = {
+  label: string;
+  waveform: OscillatorType;
+  gain: number;
+  attack: number;
+  release: number;
+  sustain: number;
+};
+
+export function PlaybackBar({ timeline, instrument = "violin", onTimeUpdate }: PlaybackBarProps) {
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const animRef = useRef<number | null>(null);
@@ -28,7 +38,7 @@ export function PlaybackBar({ timeline, onTimeUpdate }: PlaybackBarProps) {
       };
       const AudioContextClass = audioWindow.AudioContext || audioWindow.webkitAudioContext;
       if (!AudioContextClass) {
-        throw new Error("AudioContext is not supported in this browser");
+        throw new Error("当前浏览器不支持音频播放");
       }
       audioRef.current = new AudioContextClass();
     }
@@ -65,13 +75,14 @@ export function PlaybackBar({ timeline, onTimeUpdate }: PlaybackBarProps) {
       const duration = Math.max(0.08, eventEnd - Math.max(fromTime, event.time));
 
       for (const pitch of event.pitches) {
+        const profile = instrumentProfile(instrument);
         const oscillator = context.createOscillator();
         const gain = context.createGain();
-        oscillator.type = "triangle";
+        oscillator.type = profile.waveform;
         oscillator.frequency.value = midiToFrequency(pitch);
         gain.gain.setValueAtTime(0.0001, noteStart);
-        gain.gain.linearRampToValueAtTime(0.14 / Math.max(1, event.pitches.length), noteStart + 0.015);
-        gain.gain.setValueAtTime(0.12 / Math.max(1, event.pitches.length), noteStart + Math.max(0.02, duration - 0.05));
+        gain.gain.linearRampToValueAtTime(profile.gain / Math.max(1, event.pitches.length), noteStart + profile.attack);
+        gain.gain.setValueAtTime(profile.sustain / Math.max(1, event.pitches.length), noteStart + Math.max(0.02, duration - profile.release));
         gain.gain.linearRampToValueAtTime(0.0001, noteStart + duration);
         oscillator.connect(gain);
         gain.connect(context.destination);
@@ -178,7 +189,10 @@ export function PlaybackBar({ timeline, onTimeUpdate }: PlaybackBarProps) {
         {formatTime(totalDuration)}
       </span>
       <span className="text-xs text-muted-foreground">
-        {timeline.bpm} BPM
+        速度 {timeline.bpm}
+      </span>
+      <span className="text-xs text-muted-foreground">
+        {instrumentProfile(instrument).label}
       </span>
     </div>
   );
@@ -186,4 +200,16 @@ export function PlaybackBar({ timeline, onTimeUpdate }: PlaybackBarProps) {
 
 function midiToFrequency(midi: number): number {
   return 440 * 2 ** ((midi - 69) / 12);
+}
+
+function instrumentProfile(instrument: string): InstrumentProfile {
+  const profiles: Record<string, InstrumentProfile> = {
+    violin: { label: "小提琴", waveform: "sawtooth", gain: 0.09, attack: 0.035, release: 0.08, sustain: 0.07 },
+    piano: { label: "钢琴", waveform: "triangle", gain: 0.18, attack: 0.008, release: 0.18, sustain: 0.04 },
+    flute: { label: "长笛", waveform: "sine", gain: 0.13, attack: 0.04, release: 0.09, sustain: 0.1 },
+    guitar: { label: "吉他", waveform: "triangle", gain: 0.16, attack: 0.006, release: 0.14, sustain: 0.05 },
+    cello: { label: "大提琴", waveform: "sawtooth", gain: 0.11, attack: 0.05, release: 0.12, sustain: 0.08 },
+    clarinet: { label: "单簧管", waveform: "square", gain: 0.08, attack: 0.03, release: 0.08, sustain: 0.06 },
+  };
+  return profiles[instrument] ?? profiles.violin;
 }

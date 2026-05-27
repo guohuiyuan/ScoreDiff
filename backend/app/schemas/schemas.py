@@ -8,6 +8,10 @@ class ProjectCreate(BaseModel):
     instrument: str = "violin"
 
 
+class ProjectUpdate(BaseModel):
+    instrument: Optional[str] = None
+
+
 class ProjectResponse(BaseModel):
     id: str
     title: str

@@ -51,6 +51,16 @@ class ProjectService:
             project.updated_at = datetime.now(timezone.utc).isoformat()
             await self.session.commit()
 
+    async def update_instrument(self, project_id: str, instrument: str) -> Optional[Project]:
+        project = await self.get(project_id)
+        if not project:
+            return None
+        project.instrument = instrument
+        project.updated_at = datetime.now(timezone.utc).isoformat()
+        await self.session.commit()
+        await self.session.refresh(project)
+        return project
+
 
 class FileService:
     def __init__(self, session: AsyncSession):

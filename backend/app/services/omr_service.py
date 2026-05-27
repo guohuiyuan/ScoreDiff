@@ -3,6 +3,7 @@
 Uses HOMR (via uvx or direct CLI) for optical music recognition.
 Falls back to Audiveris, then to basic image preprocessing.
 """
+import copy
 import subprocess
 import shutil
 import tempfile
@@ -12,6 +13,7 @@ from typing import Optional, Union
 
 import cv2
 import numpy as np
+from music21 import converter, metadata, stream
 
 from app.core.config import settings
 
@@ -129,6 +131,68 @@ class OMRService:
 
         return staves
 
+    def _write_musicxml_candidate(self, candidate: Path, output_path: Path) -> Path:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if candidate.suffix.lower() == ".mxl":
+            score = converter.parse(str(candidate))
+            score.write("musicxml", fp=str(output_path))
+        else:
+            shutil.copy2(candidate, output_path)
+        return output_path
+
+    def _merge_musicxml_files(self, musicxml_paths: list[Path], output_path: Path) -> Path:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if len(musicxml_paths) == 1:
+            shutil.copy2(musicxml_paths[0], output_path)
+            return output_path
+
+        merged = stream.Score()
+        merged.metadata = metadata.Metadata()
+        merged.metadata.title = "ScoreDiff OMR"
+        merged_part = stream.Part()
+        next_measure_number = 1
+
+        for musicxml_path in musicxml_paths:
+            score = converter.parse(str(musicxml_path))
+            parts = list(score.parts)
+            source_part = parts[0] if parts else score
+            if not merged_part.partName and getattr(source_part, "partName", None):
+                merged_part.partName = source_part.partName
+
+            measures = list(source_part.getElementsByClass(stream.Measure))
+            if not measures:
+                flat_items = list(source_part.flatten().notesAndRests)
+                if flat_items:
+                    measure = stream.Measure(number=next_measure_number)
+                    for item in flat_items:
+                        measure.append(copy.deepcopy(item))
+                    merged_part.append(measure)
+                    next_measure_number += 1
+                continue
+
+            for measure in measures:
+                merged_measure = copy.deepcopy(measure)
+                merged_measure.number = next_measure_number
+                merged_part.append(merged_measure)
+                next_measure_number += 1
+
+        if next_measure_number == 1:
+            raise ValueError("没有可合并的小节")
+
+        merged.append(merged_part)
+        merged.write("musicxml", fp=str(output_path))
+        return output_path
+
+    def _expand_sources_to_images(self, source_paths: list[Union[str, Path]]) -> list[Path]:
+        images: list[Path] = []
+        for source_path in source_paths:
+            source = Path(source_path)
+            if source.suffix.lower() == ".pdf":
+                images.extend(self.pdf_to_images(source))
+            else:
+                images.append(source)
+        return images
+
     def convert_with_homr(
         self, image_path: Union[str, Path], output_path: Union[str, Path]
     ) -> Optional[Path]:
@@ -171,8 +235,7 @@ class OMRService:
                         + list(src_dir.rglob(f"{image_path.stem}*.xml"))
                     )
                 if candidates:
-                    shutil.copy2(candidates[0], output_path)
-                    return output_path
+                    return self._write_musicxml_candidate(candidates[0], output_path)
             except (subprocess.TimeoutExpired, FileNotFoundError):
                 return None
 
@@ -198,65 +261,87 @@ class OMRService:
 
                 mxl_files = list(Path(tmpdir).rglob("*.mxl")) + list(Path(tmpdir).rglob("*.musicxml"))
                 if mxl_files:
-                    shutil.copy2(mxl_files[0], output_path)
-                    return Path(output_path)
+                    return self._write_musicxml_candidate(mxl_files[0], Path(output_path))
             except (subprocess.TimeoutExpired, FileNotFoundError):
                 return None
 
         return None
 
-    def convert_image_to_musicxml(
-        self, image_path: Union[str, Path], project_id: str
+    def convert_sources_to_musicxml(
+        self, source_paths: list[Union[str, Path]], project_id: str
     ) -> dict:
-        """Main entry point: convert an image/PDF to MusicXML.
-
-        Tries HOMR first, then Audiveris, then falls back to preprocessing.
-        """
-        image_path = Path(image_path)
+        """Main entry point: convert images/PDFs to one MusicXML file."""
         output_path = self.output_dir / f"{project_id}.musicxml"
+        homr_inputs = self._expand_sources_to_images(source_paths)
 
-        if image_path.suffix.lower() == ".pdf":
-            pages = self.pdf_to_images(image_path)
-            if not pages:
-                return {"status": "error", "message": "PDF 转图片失败"}
-            homr_input = pages[0]
-        else:
-            homr_input = image_path
+        if not homr_inputs:
+            return {"status": "error", "message": "没有可识别的图片或 PDF 页面"}
 
-        if self.has_homr:
-            result = self.convert_with_homr(homr_input, output_path)
-            if result:
+        converted: list[Optional[Path]] = [None] * len(homr_inputs)
+        methods: list[Optional[str]] = [None] * len(homr_inputs)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+
+            if self.has_homr:
+                for index, homr_input in enumerate(homr_inputs):
+                    result = self.convert_with_homr(
+                        homr_input,
+                        tmpdir_path / f"{project_id}_page_{index + 1}.musicxml",
+                    )
+                    if result:
+                        converted[index] = result
+                        methods[index] = "homr"
+
+            if self.has_audiveris:
+                for index, homr_input in enumerate(homr_inputs):
+                    if converted[index]:
+                        continue
+                    result = self.convert_with_audiveris(
+                        homr_input,
+                        tmpdir_path / f"{project_id}_page_{index + 1}.musicxml",
+                    )
+                    if result:
+                        converted[index] = result
+                        methods[index] = "audiveris"
+
+            successful = [path for path in converted if path is not None]
+            if successful:
+                self._merge_musicxml_files(successful, output_path)
+                converted_count = len(successful)
+                total_count = len(homr_inputs)
+                method_names = sorted({method for method in methods if method})
                 return {
                     "status": "success",
                     "musicxml_path": str(output_path),
-                    "message": "Converted via HOMR",
-                    "method": "homr",
+                    "message": f"已识别并合并 {converted_count}/{total_count} 页",
+                    "method": "+".join(method_names),
+                    "pages_total": total_count,
+                    "pages_converted": converted_count,
                 }
 
-        if self.has_audiveris:
-            result = self.convert_with_audiveris(image_path, output_path)
-            if result:
-                return {
-                    "status": "success",
-                    "musicxml_path": str(output_path),
-                    "message": "Converted via Audiveris",
-                    "method": "audiveris",
-                }
+        staves: list[list[int]] = []
+        preprocessed_paths: list[str] = []
+        preprocessed_dir = settings.data_dir / "scores" / "preprocessed"
+        preprocessed_dir.mkdir(parents=True, exist_ok=True)
 
-        binary = self.preprocess_image(str(homr_input))
-        staves = self.detect_staff_lines(binary)
+        for index, homr_input in enumerate(homr_inputs):
+            binary = self.preprocess_image(str(homr_input))
+            detected = self.detect_staff_lines(binary)
+            staves.extend(detected)
 
-        preprocessed_path = settings.data_dir / "scores" / "preprocessed" / f"{project_id}.png"
-        preprocessed_path.parent.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(preprocessed_path), binary)
+            preprocessed_path = preprocessed_dir / f"{project_id}_{index + 1}.png"
+            cv2.imwrite(str(preprocessed_path), binary)
+            preprocessed_paths.append(str(preprocessed_path))
 
         return {
             "status": "preprocessed",
-            "preprocessed_path": str(preprocessed_path),
+            "preprocessed_path": preprocessed_paths[0] if preprocessed_paths else None,
+            "preprocessed_paths": preprocessed_paths,
             "staves_detected": len(staves),
             "staff_positions": staves,
             "message": (
-                f"图片已预处理，检测到 {len(staves)} 个五线谱组。"
+                f"已预处理 {len(homr_inputs)} 页，检测到 {len(staves)} 个五线谱组。"
                 "完整 OMR 转换需要安装 HOMR/Audiveris 或手动上传 MusicXML。"
             ),
             "method": "preprocessing_only",
@@ -265,3 +350,9 @@ class OMRService:
                 "audiveris": self.has_audiveris,
             },
         }
+
+    def convert_image_to_musicxml(
+        self, image_path: Union[str, Path], project_id: str
+    ) -> dict:
+        """Main entry point: convert an image/PDF to MusicXML."""
+        return self.convert_sources_to_musicxml([image_path], project_id)

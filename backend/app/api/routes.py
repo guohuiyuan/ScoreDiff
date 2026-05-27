@@ -1,6 +1,7 @@
 import asyncio
 import json
 import shutil
+import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile
@@ -17,6 +18,7 @@ from app.schemas.schemas import (
     PerformanceResultResponse,
     ProjectCreate,
     ProjectResponse,
+    ProjectUpdate,
     ScoreConvertResponse,
     ScoreFileResponse,
     ScoreResponse,
@@ -48,6 +50,7 @@ from app.services.services import (
 router = APIRouter(prefix="/api")
 
 ALLOWED_SCORE_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".musicxml", ".xml", ".mid", ".midi"}
+ALLOWED_INSTRUMENTS = {"violin", "piano", "flute", "guitar", "cello", "clarinet"}
 
 
 def _score_paths(project_id: str) -> dict[str, Path]:
@@ -78,6 +81,7 @@ def _delete_project_files(project_id: str) -> None:
         settings.data_dir / "uploads",
         settings.data_dir / "recordings",
         settings.data_dir / "scores" / "pages",
+        settings.data_dir / "scores" / "preprocessed",
     ]
 
     candidates: list[Path] = []
@@ -112,10 +116,7 @@ def _latest_score_file(files, file_types: set[str]):
     return max(candidates, key=lambda f: f.created_at)
 
 
-@router.post("/projects", response_model=ProjectResponse)
-async def create_project(body: ProjectCreate, session: AsyncSession = Depends(get_session)):
-    svc = ProjectService(session)
-    project = await svc.create(title=body.title, instrument=body.instrument)
+def _project_response(project) -> ProjectResponse:
     return ProjectResponse(
         id=project.id,
         title=project.title,
@@ -127,22 +128,20 @@ async def create_project(body: ProjectCreate, session: AsyncSession = Depends(ge
     )
 
 
+@router.post("/projects", response_model=ProjectResponse)
+async def create_project(body: ProjectCreate, session: AsyncSession = Depends(get_session)):
+    if body.instrument not in ALLOWED_INSTRUMENTS:
+        raise HTTPException(status_code=400, detail="不支持的乐器音色")
+    svc = ProjectService(session)
+    project = await svc.create(title=body.title, instrument=body.instrument)
+    return _project_response(project)
+
+
 @router.get("/projects", response_model=list[ProjectResponse])
 async def list_projects(session: AsyncSession = Depends(get_session)):
     svc = ProjectService(session)
     projects = await svc.list_all()
-    return [
-        ProjectResponse(
-            id=p.id,
-            title=p.title,
-            instrument=p.instrument,
-            source_type=p.source_type,
-            status=p.status,
-            created_at=p.created_at,
-            updated_at=p.updated_at,
-        )
-        for p in projects
-    ]
+    return [_project_response(p) for p in projects]
 
 
 @router.get("/projects/{project_id}", response_model=ProjectResponse)
@@ -150,16 +149,35 @@ async def get_project(project_id: str, session: AsyncSession = Depends(get_sessi
     svc = ProjectService(session)
     project = await svc.get(project_id)
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return ProjectResponse(
-        id=project.id,
-        title=project.title,
-        instrument=project.instrument,
-        source_type=project.source_type,
-        status=project.status,
-        created_at=project.created_at,
-        updated_at=project.updated_at,
-    )
+        raise HTTPException(status_code=404, detail="项目不存在")
+    return _project_response(project)
+
+
+@router.patch("/projects/{project_id}", response_model=ProjectResponse)
+async def update_project(project_id: str, body: ProjectUpdate, session: AsyncSession = Depends(get_session)):
+    if body.instrument is not None and body.instrument not in ALLOWED_INSTRUMENTS:
+        raise HTTPException(status_code=400, detail="不支持的乐器音色")
+
+    svc = ProjectService(session)
+    project = await svc.get(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    if body.instrument is not None and body.instrument != project.instrument:
+        project = await svc.update_instrument(project_id, body.instrument)
+        score_svc = ScoreService(session)
+        note_groups = await score_svc.get_note_groups(project_id)
+        if note_groups and project:
+            paths = _score_paths(project_id)
+            export_note_groups_to_musicxml(
+                note_groups,
+                paths["musicxml"],
+                title=project.title,
+                instrument_name=project.instrument,
+            )
+            generate_midi_from_musicxml(paths["musicxml"], paths["midi"])
+
+    return _project_response(project)
 
 
 @router.delete("/projects/{project_id}")
@@ -167,7 +185,7 @@ async def delete_project(project_id: str, session: AsyncSession = Depends(get_se
     svc = ProjectService(session)
     deleted = await svc.delete(project_id)
     if not deleted:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail="项目不存在")
     _delete_project_files(project_id)
     return {"status": "deleted"}
 
@@ -177,16 +195,16 @@ async def upload_score_file(project_id: str, file: UploadFile, session: AsyncSes
     proj_svc = ProjectService(session)
     project = await proj_svc.get(project_id)
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail="项目不存在")
 
     safe_filename = Path(file.filename or "score").name
     suffix = Path(safe_filename).suffix.lower()
     if suffix not in ALLOWED_SCORE_EXTENSIONS:
-        raise HTTPException(status_code=400, detail=f"Unsupported file type: {suffix}")
+        raise HTTPException(status_code=400, detail=f"不支持的文件类型: {suffix}")
 
     upload_dir = settings.data_dir / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
-    dest = upload_dir / f"{project_id}_{safe_filename}"
+    dest = upload_dir / f"{project_id}_{uuid.uuid4().hex[:8]}_{safe_filename}"
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
@@ -205,18 +223,19 @@ async def run_omr(project_id: str, session: AsyncSession = Depends(get_session))
     proj_svc = ProjectService(session)
     project = await proj_svc.get(project_id)
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail="项目不存在")
 
     file_svc = FileService(session)
     files = await file_svc.get_by_project(project_id)
-    image_file = next(
-        (f for f in files if f.file_type in ("pdf", "png", "jpg", "jpeg", "webp")), None
+    image_files = sorted(
+        (f for f in files if f.file_type in ("pdf", "png", "jpg", "jpeg", "webp")),
+        key=lambda f: f.created_at,
     )
-    if not image_file:
-        raise HTTPException(status_code=400, detail="No image/PDF file found for this project")
+    if not image_files:
+        raise HTTPException(status_code=400, detail="当前项目没有图片或 PDF 文件")
 
     omr_svc = OMRService()
-    result = omr_svc.convert_image_to_musicxml(image_file.path, project_id)
+    result = omr_svc.convert_sources_to_musicxml([f.path for f in image_files], project_id)
 
     if result["status"] == "success":
         await proj_svc.update_status(project_id, "omr_complete")
@@ -229,7 +248,7 @@ async def get_score(project_id: str, session: AsyncSession = Depends(get_session
     proj_svc = ProjectService(session)
     project = await proj_svc.get(project_id)
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail="项目不存在")
 
     score_svc = ScoreService(session)
     groups = await score_svc.get_note_groups(project_id)
@@ -251,11 +270,11 @@ async def update_score(project_id: str, body: ScoreUpdateRequest, session: Async
     proj_svc = ProjectService(session)
     project = await proj_svc.get(project_id)
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail="项目不存在")
 
     note_groups = [normalize_note_group(g.model_dump()) for g in body.note_groups]
     if not note_groups:
-        raise HTTPException(status_code=400, detail="Score must contain at least one note or rest")
+        raise HTTPException(status_code=400, detail="乐谱至少需要包含一个音符或休止符")
 
     score_svc = ScoreService(session)
     await score_svc.save_note_groups(project_id, note_groups)
@@ -287,14 +306,14 @@ async def update_score(project_id: str, body: ScoreUpdateRequest, session: Async
 @router.post("/projects/{project_id}/convert", response_model=ScoreConvertResponse)
 async def convert_score_media(
     project_id: str,
-    target: str = Query(pattern="^(midi)$"),
+    target: str = Query(pattern="^(midi|musicxml)$"),
     session: AsyncSession = Depends(get_session),
 ):
     """Convert project score to MIDI (from MusicXML)."""
     proj_svc = ProjectService(session)
     project = await proj_svc.get(project_id)
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail="项目不存在")
 
     paths = _score_paths(project_id)
     for path in paths.values():
@@ -302,13 +321,36 @@ async def convert_score_media(
 
     file_svc = FileService(session)
     files = await file_svc.get_by_project(project_id)
+    musicxml_file = _latest_score_file(files, {"musicxml", "xml"})
+    midi_file = _latest_score_file(files, {"mid", "midi"})
     source = "existing"
 
     try:
-        if not paths["midi"].exists():
-            musicxml_file = _latest_score_file(files, {"musicxml", "xml"})
-            midi_file = _latest_score_file(files, {"mid", "midi"})
-
+        if target == "musicxml":
+            if paths["musicxml"].exists():
+                source = "musicxml"
+            elif musicxml_file:
+                shutil.copy2(musicxml_file.path, paths["musicxml"])
+                source = "musicxml"
+            elif paths["midi"].exists():
+                convert_midi_to_musicxml(paths["midi"], paths["musicxml"])
+                source = "midi"
+            elif midi_file:
+                convert_midi_to_musicxml(midi_file.path, paths["musicxml"])
+                shutil.copy2(midi_file.path, paths["midi"])
+                source = "midi"
+            else:
+                note_groups = await ScoreService(session).get_note_groups(project_id)
+                if not note_groups:
+                    raise HTTPException(status_code=400, detail="当前项目没有可导出的乐谱")
+                export_note_groups_to_musicxml(
+                    note_groups,
+                    paths["musicxml"],
+                    title=project.title,
+                    instrument_name=project.instrument,
+                )
+                source = "edited"
+        elif not paths["midi"].exists():
             if midi_file:
                 shutil.copy2(midi_file.path, paths["midi"])
                 source = "midi"
@@ -320,9 +362,21 @@ async def convert_score_media(
                 shutil.copy2(musicxml_file.path, paths["musicxml"])
                 source = "musicxml"
             else:
-                raise HTTPException(status_code=400, detail="No convertible MusicXML or MIDI file found")
+                note_groups = await ScoreService(session).get_note_groups(project_id)
+                if not note_groups:
+                    raise HTTPException(status_code=400, detail="当前项目没有可转换的 MusicXML 或 MIDI 文件")
+                export_note_groups_to_musicxml(
+                    note_groups,
+                    paths["musicxml"],
+                    title=project.title,
+                    instrument_name=project.instrument,
+                )
+                generate_midi_from_musicxml(paths["musicxml"], paths["midi"])
+                source = "edited"
         else:
             source = "midi"
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -342,12 +396,12 @@ async def upload_performance(project_id: str, file: UploadFile, session: AsyncSe
     proj_svc = ProjectService(session)
     project = await proj_svc.get(project_id)
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail="项目不存在")
 
     rec_svc = RecordingService()
     filename = file.filename or "recording.wav"
     if not rec_svc.validate_extension(filename):
-        raise HTTPException(status_code=400, detail=f"Unsupported audio format: {Path(filename).suffix}")
+        raise HTTPException(status_code=400, detail=f"不支持的音频格式: {Path(filename).suffix}")
 
     dest = rec_svc.save_upload(project_id, filename, file.file)
 
@@ -361,7 +415,7 @@ async def list_recordings(project_id: str, session: AsyncSession = Depends(get_s
     proj_svc = ProjectService(session)
     project = await proj_svc.get(project_id)
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail="项目不存在")
 
     rec_svc = RecordingService()
     recordings = rec_svc.list_recordings(project_id)
@@ -381,7 +435,7 @@ async def get_performance_result(performance_id: str, session: AsyncSession = De
     perf_svc = PerformanceService(session)
     perf = await perf_svc.get(performance_id)
     if not perf:
-        raise HTTPException(status_code=404, detail="Performance not found")
+        raise HTTPException(status_code=404, detail="录音不存在")
 
     results = await perf_svc.get_results(performance_id)
     note_results = [
@@ -414,7 +468,7 @@ async def get_task(task_id: str, session: AsyncSession = Depends(get_session)):
     task_svc = TaskService(session)
     task = await task_svc.get(task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(status_code=404, detail="任务不存在")
     return TaskResponse(task_id=task.id, status=task.status, progress=task.progress, message=task.message)
 
 
@@ -424,7 +478,7 @@ async def parse_score(project_id: str, session: AsyncSession = Depends(get_sessi
     proj_svc = ProjectService(session)
     project = await proj_svc.get(project_id)
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail="项目不存在")
 
     file_svc = FileService(session)
     files = await file_svc.get_by_project(project_id)
@@ -438,10 +492,14 @@ async def parse_score(project_id: str, session: AsyncSession = Depends(get_sessi
 
     generated_musicxml = musicxml_dest if musicxml_dest.exists() else None
     if not source_file and not generated_musicxml:
-        raise HTTPException(status_code=400, detail="No MusicXML or MIDI file found for this project")
+        raise HTTPException(status_code=400, detail="当前项目没有 MusicXML 或 MIDI 文件")
 
     try:
-        if source_file and source_file.file_type in ("musicxml", "xml"):
+        if generated_musicxml and project.status == "omr_complete":
+            note_groups = parse_musicxml_to_note_groups(generated_musicxml)
+            generate_midi_from_musicxml(generated_musicxml, midi_path)
+            source = "omr"
+        elif source_file and source_file.file_type in ("musicxml", "xml"):
             note_groups = parse_musicxml_to_note_groups(source_file.path)
             generate_midi_from_musicxml(source_file.path, midi_path)
             shutil.copy2(source_file.path, musicxml_dest)
@@ -451,10 +509,14 @@ async def parse_score(project_id: str, session: AsyncSession = Depends(get_sessi
             convert_midi_to_musicxml(source_file.path, musicxml_dest)
             shutil.copy2(source_file.path, midi_path)
             source = "midi"
-        else:
+        elif generated_musicxml:
             note_groups = parse_musicxml_to_note_groups(generated_musicxml)
             generate_midi_from_musicxml(generated_musicxml, midi_path)
             source = "omr"
+        else:
+            raise HTTPException(status_code=400, detail="当前项目没有可解析的乐谱文件")
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -476,7 +538,7 @@ async def get_playback_timeline(project_id: str, bpm: float = 120.0, session: As
     score_svc = ScoreService(session)
     groups = await score_svc.get_note_groups(project_id)
     if not groups:
-        raise HTTPException(status_code=404, detail="No note_groups found. Parse score first.")
+        raise HTTPException(status_code=404, detail="未找到乐谱音符，请先解析乐谱")
     timeline = generate_playback_timeline(groups, bpm=bpm)
     return timeline
 
@@ -487,12 +549,12 @@ async def analyze_performance(performance_id: str, mode: str = "mock", session: 
     perf_svc = PerformanceService(session)
     perf = await perf_svc.get(performance_id)
     if not perf:
-        raise HTTPException(status_code=404, detail="Performance not found")
+        raise HTTPException(status_code=404, detail="录音不存在")
 
     score_svc = ScoreService(session)
     note_groups = await score_svc.get_note_groups(perf.project_id)
     if not note_groups:
-        raise HTTPException(status_code=400, detail="No note_groups found for this project")
+        raise HTTPException(status_code=400, detail="当前项目没有可分析的乐谱音符")
 
     if mode == "real":
         scoring = generate_real_scoring(perf.audio_path, note_groups, performance_id)
@@ -537,7 +599,7 @@ async def analyze_performance_async(
     perf_svc = PerformanceService(session)
     perf = await perf_svc.get(performance_id)
     if not perf:
-        raise HTTPException(status_code=404, detail="Performance not found")
+        raise HTTPException(status_code=404, detail="录音不存在")
 
     task_svc = TaskService(session)
     task = await task_svc.create(task_type="analyze", project_id=perf.project_id)
@@ -556,7 +618,7 @@ async def _run_analysis_task(task_id: str, performance_id: str, project_id: str)
         (0.3, "音高检测中..."),
         (0.5, "节奏对齐中..."),
         (0.7, "生成评分..."),
-        (0.9, "生成 Diff 报告..."),
+        (0.9, "生成差异报告..."),
     ]
 
     for progress, message in steps:
@@ -572,7 +634,7 @@ async def _run_analysis_task(task_id: str, performance_id: str, project_id: str)
         perf = await perf_svc.get(performance_id)
 
         if not note_groups or not perf:
-            await task_svc.update(task_id, status="failed", progress=1.0, error="Missing data")
+            await task_svc.update(task_id, status="failed", progress=1.0, error="缺少分析数据")
             await redis_client.hset(f"task:{task_id}", mapping={"progress": "1.0", "message": "失败"})
             return
 
@@ -625,7 +687,7 @@ async def get_task_progress(task_id: str, session: AsyncSession = Depends(get_se
     task_svc = TaskService(session)
     task = await task_svc.get(task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(status_code=404, detail="任务不存在")
     return TaskResponse(task_id=task.id, status=task.status, progress=task.progress, message=task.message)
 
 
@@ -635,11 +697,11 @@ async def get_performance_diff(performance_id: str, session: AsyncSession = Depe
     perf_svc = PerformanceService(session)
     perf = await perf_svc.get(performance_id)
     if not perf:
-        raise HTTPException(status_code=404, detail="Performance not found")
+        raise HTTPException(status_code=404, detail="录音不存在")
 
     results = await perf_svc.get_results(performance_id)
     if not results:
-        raise HTTPException(status_code=400, detail="No analysis results. Run analyze first.")
+        raise HTTPException(status_code=400, detail="没有分析结果，请先分析录音")
 
     scoring_result = {
         "total_score": perf.total_score,
