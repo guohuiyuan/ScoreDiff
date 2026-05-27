@@ -11,7 +11,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.main import app
 from app.services.audio_conversion_service import convert_audio_to_midi, convert_midi_to_mp3
-from app.services.score_parser import parse_midi_to_note_groups
+from app.services.score_parser import build_score_from_note_groups, parse_midi_to_note_groups
 
 
 def create_test_midi(output_path: Path):
@@ -45,6 +45,36 @@ def test_conversion_services():
     source_midi.unlink(missing_ok=True)
     mp3_out.unlink(missing_ok=True)
     roundtrip_midi.unlink(missing_ok=True)
+
+
+def test_score_export_respects_measure_grid():
+    score = build_score_from_note_groups([
+        {
+            "note_group_id": "ng_a",
+            "measure": 1,
+            "beat": 1,
+            "start": 0,
+            "end": 0.5,
+            "target_pitches": [60],
+            "target_names": ["C4"],
+            "type": "single_note",
+        },
+        {
+            "note_group_id": "ng_b",
+            "measure": 1,
+            "beat": 3,
+            "start": 1,
+            "end": 1.25,
+            "target_pitches": [62],
+            "target_names": ["D4"],
+            "type": "single_note",
+        },
+    ])
+    measure = score.parts[0].measure(1)
+    durations = [float(element.quarterLength) for element in measure.notesAndRests]
+    assert durations == [1.0, 1.0, 0.5, 1.5]
+    assert measure.notesAndRests[1].isRest
+    print("[OK] Exported score keeps note durations on the measure grid")
 
 
 async def test_api_conversion_and_edit():
@@ -99,5 +129,6 @@ async def test_api_conversion_and_edit():
 
 if __name__ == "__main__":
     test_conversion_services()
+    test_score_export_respects_measure_grid()
     asyncio.run(test_api_conversion_and_edit())
     print("\n=== CONVERSION AND SCORE EDIT TEST PASSED ===")

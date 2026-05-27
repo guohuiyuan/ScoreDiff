@@ -79,6 +79,23 @@ def _duration_to_quarter_length(start: float, end: float, bpm: float) -> float:
     return max(0.25, round(quarter_length * 4) / 4)
 
 
+def _bounded_beat(beat: float) -> float:
+    return max(1.0, min(4.75, round(float(beat) * 4) / 4))
+
+
+def _make_music21_element(group: dict, quarter_length: float):
+    pitches = [int(p) for p in group.get("target_pitches", []) if p is not None]
+    note_type = group.get("type") or ("rest" if not pitches else "single_note")
+
+    if note_type == "rest" or not pitches:
+        return note.Rest(quarterLength=quarter_length)
+    if len(pitches) == 1:
+        element = note.Note(quarterLength=quarter_length)
+        element.pitch.midi = pitches[0]
+        return element
+    return chord.Chord(pitches, quarterLength=quarter_length)
+
+
 def build_score_from_note_groups(
     note_groups: list[dict],
     bpm: float = 120.0,
@@ -106,23 +123,29 @@ def build_score_from_note_groups(
         if measure_no == 1:
             measure.append(meter.TimeSignature("4/4"))
 
+        cursor = 0.0
         for group in sorted(grouped[measure_no], key=lambda g: (float(g.get("beat") or 1), float(g.get("start") or 0))):
             start = float(group.get("start") or 0)
             end = float(group.get("end") or (start + 0.5))
-            quarter_length = _duration_to_quarter_length(start, end, bpm)
-            pitches = [int(p) for p in group.get("target_pitches", []) if p is not None]
-            note_type = group.get("type") or ("rest" if not pitches else "single_note")
+            offset = _bounded_beat(float(group.get("beat") or 1)) - 1.0
+            if offset < cursor:
+                offset = cursor
+            if offset >= 4.0:
+                continue
 
-            if note_type == "rest" or not pitches:
-                element = note.Rest(quarterLength=quarter_length)
-            elif len(pitches) == 1:
-                element = note.Note(quarterLength=quarter_length)
-                element.pitch.midi = pitches[0]
-            else:
-                element = chord.Chord(pitches, quarterLength=quarter_length)
+            if offset > cursor:
+                measure.append(note.Rest(quarterLength=round(offset - cursor, 4)))
+                cursor = offset
 
-            offset = max(0.0, float(group.get("beat") or 1) - 1.0)
-            measure.insert(offset, element)
+            quarter_length = min(_duration_to_quarter_length(start, end, bpm), 4.0 - cursor)
+            if quarter_length <= 0:
+                continue
+
+            measure.append(_make_music21_element(group, quarter_length))
+            cursor = round(cursor + quarter_length, 4)
+
+        if cursor < 4.0:
+            measure.append(note.Rest(quarterLength=round(4.0 - cursor, 4)))
 
         part.append(measure)
 
@@ -148,11 +171,15 @@ def normalize_note_group(group: dict, bpm: float = 120.0) -> dict:
     """Return a safe note_group payload for persistence and score export."""
     beat_duration = 60.0 / bpm
     measure = max(1, int(group.get("measure") or 1))
-    beat = max(1.0, float(group.get("beat") or 1.0))
-    start = float(group.get("start") or ((measure - 1) * 4 + (beat - 1)) * beat_duration)
+    beat = _bounded_beat(float(group.get("beat") or 1.0))
+    start = ((measure - 1) * 4 + (beat - 1)) * beat_duration
     end = float(group.get("end") or (start + beat_duration))
     if end <= start:
         end = start + beat_duration
+    measure_end = ((measure - 1) * 4 + 4) * beat_duration
+    end = min(end, measure_end)
+    if end <= start:
+        end = min(start + (0.25 * beat_duration), measure_end)
 
     pitches = [int(p) for p in group.get("target_pitches", []) if p is not None]
     names = group.get("target_names") or [_midi_name(p) for p in pitches]

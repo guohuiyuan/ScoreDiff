@@ -7,8 +7,8 @@
 - 上传 MusicXML / MIDI / MP3 乐谱源（或图片/PDF 触发 OMR 预处理）
 - MIDI 与 MP3 互相转换，自动生成 MusicXML / MIDI / MP3 导出文件
 - 浏览器内电子谱渲染（OpenSheetMusicDisplay）与多行可编辑五线谱
-- 所见即所得修谱：点选音符、纵向拖动改音高、编辑小节/拍号位置/时值并保存
-- 电子谱动态播放：播放条驱动当前音符高亮和播放指示线
+- 所见即所得修谱：选择模式、音符输入模式、时值工具、点谱输入、方向键改音高、编辑小节/拍号位置/时值并保存
+- 电子谱动态播放：播放条驱动当前音符高亮和播放指示线，并用 Web Audio 合成播放声音
 - 浏览器录音，自动上传分析
 - 真实音频分析：pYIN 音准检测 + onset 节奏对齐 + CQT 双音识别
 - 五维评分：音准 / 节奏 / 完整度 / 稳定性 / 总分
@@ -88,12 +88,12 @@ MIDI 目标优先复用已生成的 MIDI；如果只有 MusicXML，就用 music2
 
 ### 6. 电子谱预览与播放时间线
 
-「印刷谱」模式使用 OpenSheetMusicDisplay 加载后端暴露的 MusicXML 文件并渲染为排版谱。播放条通过 `GET /api/projects/{id}/playback-timeline` 获取按秒计算的事件序列，前端用 `requestAnimationFrame` 驱动播放进度，并把当前时间传给电子谱视图。编辑谱会根据当前时间高亮正在播放的音符，并显示竖向播放指示线。
+「印刷谱」模式使用 OpenSheetMusicDisplay 加载后端暴露的 MusicXML 文件并渲染为排版谱。播放条通过 `GET /api/projects/{id}/playback-timeline` 获取按秒计算的事件序列，前端用 `requestAnimationFrame` 驱动播放进度，并把当前时间传给电子谱视图。编辑谱会根据当前时间高亮正在播放的音符，并显示竖向播放指示线。声音由浏览器 Web Audio API 根据事件里的 MIDI pitch 实时合成。
 
 涉及技术：
 - 谱面渲染：OpenSheetMusicDisplay
 - 时间线生成：后端根据 `note_groups.start/end` 计算事件
-- 前端播放 UI：React state、Base UI Slider、requestAnimationFrame、SVG 当前音符高亮
+- 前端播放 UI：React state、Base UI Slider、requestAnimationFrame、SVG 当前音符高亮、Web Audio API
 
 ### 7. 录音与演奏分析
 

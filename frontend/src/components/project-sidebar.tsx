@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { AudioLines, Download, FileMusic, Music2, Plus, Upload } from "lucide-react";
+import { AudioLines, Download, FileMusic, Music2, Plus, Trash2, Upload } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import {
   fetchProjects,
   createProject,
+  deleteProject,
   fetchScore,
   uploadScoreFile,
   parseScore,
@@ -21,7 +22,7 @@ import {
 } from "@/lib/api";
 
 interface ProjectSidebarProps {
-  onProjectSelect?: (score: ScoreData | null, projectId: string) => void;
+  onProjectSelect?: (score: ScoreData | null, projectId: string | null) => void;
   onDiffReady?: (report: DiffReport | null) => void;
   onTimelineReady?: (timeline: PlaybackTimeline | null) => void;
 }
@@ -60,6 +61,24 @@ export function ProjectSidebar({ onProjectSelect, onDiffReady, onTimelineReady }
       }
     } catch {
       onProjectSelect?.(null, projectId);
+    }
+  }
+
+  async function handleDelete(projectId: string, title: string) {
+    if (!confirm(`删除项目「${title}」？相关谱面、音频和分析结果会一起删除。`)) return;
+    setWorking("正在删除项目...");
+    try {
+      await deleteProject(projectId);
+      setProjects((prev) => prev.filter((project) => project.id !== projectId));
+      if (selected === projectId) {
+        setSelected(null);
+        onDiffReady?.(null);
+        onTimelineReady?.(null);
+        onProjectSelect?.(null, null);
+      }
+      setWorking(null);
+    } catch (error) {
+      setWorking(error instanceof Error ? error.message : "删除失败");
     }
   }
 
@@ -131,23 +150,36 @@ export function ProjectSidebar({ onProjectSelect, onDiffReady, onTimelineReady }
           <p className="p-3 text-sm text-muted-foreground">暂无项目</p>
         ) : (
           <ul className="p-1">
-            {projects.map((p) => (
-              <li key={p.id}>
-                <button
-                  className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
-                    selected === p.id
-                      ? "bg-accent text-accent-foreground"
-                      : "hover:bg-muted"
+            {projects.map((p) => {
+              const active = selected === p.id;
+              return (
+                <li
+                  key={p.id}
+                  className={`group flex items-center gap-1 rounded-md pr-1 transition-colors ${
+                    active ? "bg-accent text-accent-foreground" : "hover:bg-muted"
                   }`}
-                  onClick={() => handleSelect(p.id)}
                 >
-                  <div className="font-medium truncate">{p.title}</div>
-                  <div className="text-xs text-muted-foreground">
-                    {p.instrument} · {p.status}
-                  </div>
-                </button>
-              </li>
-            ))}
+                  <button
+                    className="min-w-0 flex-1 text-left px-3 py-2 text-sm"
+                    onClick={() => handleSelect(p.id)}
+                  >
+                    <div className="font-medium truncate">{p.title}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {p.instrument} / {p.status}
+                    </div>
+                  </button>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label={`删除 ${p.title}`}
+                    className="opacity-60 hover:opacity-100"
+                    onClick={() => handleDelete(p.id, p.title)}
+                  >
+                    <Trash2 />
+                  </Button>
+                </li>
+              );
+            })}
           </ul>
         )}
       </ScrollArea>

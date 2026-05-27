@@ -67,6 +67,12 @@ export async function createProject(title: string, instrument: string = "violin"
   return res.json();
 }
 
+export async function deleteProject(projectId: string): Promise<{ status: string }> {
+  const res = await fetch(`${API_BASE}/api/projects/${projectId}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await readError(res, "Failed to delete project"));
+  return res.json();
+}
+
 export async function fetchScore(projectId: string): Promise<ScoreData> {
   const res = await fetch(`${API_BASE}/api/projects/${projectId}/score`);
   if (!res.ok) throw new Error("Failed to fetch score");

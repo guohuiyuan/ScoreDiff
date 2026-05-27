@@ -49,7 +49,7 @@ export default function Home() {
         }
       });
     },
-    [selectedProjectId]
+    [selectedProjectId],
   );
 
   return (
@@ -92,12 +92,14 @@ export default function Home() {
           onTimeUpdate={setPlaybackTime}
         />
       </main>
-      <aside className="w-80 border-l border-border flex-shrink-0">
-        <IssuePanel
-          diffReport={diffReport}
-          onViewDetails={() => setShowDiffViewer(true)}
-        />
-      </aside>
+      {diffReport && (
+        <aside className="hidden w-72 flex-shrink-0 border-l border-border xl:block 2xl:w-80">
+          <IssuePanel
+            diffReport={diffReport}
+            onViewDetails={() => setShowDiffViewer(true)}
+          />
+        </aside>
+      )}
 
       {showDiffViewer && (
         <DiffViewer

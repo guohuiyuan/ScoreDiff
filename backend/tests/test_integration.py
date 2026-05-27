@@ -117,6 +117,14 @@ async def test_full_flow():
         assert len(result["note_results"]) == 4
         print(f"[OK] Performance result: {len(result['note_results'])} note results")
 
+        # 10. Delete project and related data
+        r = await client.delete(f"/api/projects/{pid}")
+        assert r.status_code == 200, f"Delete project failed: {r.text}"
+        assert r.json()["status"] == "deleted"
+        r = await client.get(f"/api/projects/{pid}")
+        assert r.status_code == 404
+        print("[OK] Deleted project and related records")
+
         print("\n=== ALL INTEGRATION TESTS PASSED ===")
 
 

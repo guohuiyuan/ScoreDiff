@@ -26,6 +26,24 @@ class ProjectService:
     async def get(self, project_id: str) -> Optional[Project]:
         return await self.session.get(Project, project_id)
 
+    async def delete(self, project_id: str) -> bool:
+        project = await self.get(project_id)
+        if not project:
+            return False
+
+        result = await self.session.execute(select(Performance.id).where(Performance.project_id == project_id))
+        performance_ids = list(result.scalars().all())
+        if performance_ids:
+            await self.session.execute(delete(NoteResult).where(NoteResult.performance_id.in_(performance_ids)))
+
+        await self.session.execute(delete(Performance).where(Performance.project_id == project_id))
+        await self.session.execute(delete(NoteGroup).where(NoteGroup.project_id == project_id))
+        await self.session.execute(delete(ScoreFile).where(ScoreFile.project_id == project_id))
+        await self.session.execute(delete(Task).where(Task.project_id == project_id))
+        await self.session.delete(project)
+        await self.session.commit()
+        return True
+
     async def update_status(self, project_id: str, status: str):
         project = await self.get(project_id)
         if project:

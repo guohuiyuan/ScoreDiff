@@ -73,6 +73,43 @@ def _score_urls(project_id: str) -> dict[str, str | None]:
     return {key: _file_url(path) if path.exists() else None for key, path in paths.items()}
 
 
+def _delete_project_files(project_id: str) -> None:
+    data_dir = settings.data_dir.resolve()
+    exact_paths = [
+        *_score_paths(project_id).values(),
+        settings.data_dir / "scores" / "preprocessed" / f"{project_id}.png",
+    ]
+    directories = [
+        settings.data_dir / "uploads",
+        settings.data_dir / "recordings",
+        settings.data_dir / "scores" / "pages",
+    ]
+
+    candidates: list[Path] = []
+    candidates.extend(exact_paths)
+    for directory in directories:
+        if not directory.exists():
+            continue
+        candidates.extend(
+            path
+            for path in directory.iterdir()
+            if path.is_file() and (path.name.startswith(f"{project_id}_") or path.stem == project_id)
+        )
+
+    for path in candidates:
+        try:
+            resolved = path.resolve()
+        except FileNotFoundError:
+            continue
+        if resolved == data_dir or data_dir not in resolved.parents:
+            continue
+        if resolved.is_file():
+            try:
+                resolved.unlink(missing_ok=True)
+            except OSError:
+                continue
+
+
 def _latest_score_file(files, file_types: set[str]):
     candidates = [f for f in files if f.file_type in file_types]
     if not candidates:
@@ -128,6 +165,16 @@ async def get_project(project_id: str, session: AsyncSession = Depends(get_sessi
         created_at=project.created_at,
         updated_at=project.updated_at,
     )
+
+
+@router.delete("/projects/{project_id}")
+async def delete_project(project_id: str, session: AsyncSession = Depends(get_session)):
+    svc = ProjectService(session)
+    deleted = await svc.delete(project_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Project not found")
+    _delete_project_files(project_id)
+    return {"status": "deleted"}
 
 
 @router.post("/projects/{project_id}/score-file", response_model=ScoreFileResponse)
