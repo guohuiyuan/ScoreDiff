@@ -73,7 +73,7 @@ export function ScoreViewer({
   colorMap,
   onScoreSaved,
 }: ScoreViewerProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
+  const printContainerRef = useRef<HTMLDivElement>(null);
   const osmdRef = useRef<OsmdInstance | null>(null);
   const dragRef = useRef<{ index: number; startY: number; startPitch: number } | null>(null);
   const draftIdRef = useRef(0);
@@ -88,7 +88,14 @@ export function ScoreViewer({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (mode !== "print" || !musicxmlUrl || !containerRef.current) return;
+    if (mode !== "print") {
+      if (osmdRef.current) {
+        osmdRef.current.clear?.();
+        osmdRef.current = null;
+      }
+      return;
+    }
+    if (!musicxmlUrl || !printContainerRef.current) return;
 
     let cancelled = false;
 
@@ -101,7 +108,9 @@ export function ScoreViewer({
         if (cancelled) return;
 
         osmdRef.current?.clear?.();
-        const osmd = new OpenSheetMusicDisplay(containerRef.current!, {
+        const container = printContainerRef.current;
+        if (!container) return;
+        const osmd = new OpenSheetMusicDisplay(container, {
           autoResize: true,
           drawTitle: true,
           drawComposer: true,
@@ -446,14 +455,13 @@ export function ScoreViewer({
         </div>
       )}
 
-      {mode === "print" ? (
-        <div className="flex-1 min-h-0 overflow-auto">
-          {loadingPrint && (
-            <div className="p-3 text-sm text-muted-foreground text-center">加载谱面中...</div>
-          )}
-          <div ref={containerRef} className="min-h-full p-4" />
-        </div>
-      ) : (
+      <div className="flex-1 min-h-0 overflow-auto" style={{ display: mode === "print" ? "block" : "none" }}>
+        {loadingPrint && (
+          <div className="p-3 text-sm text-muted-foreground text-center">加载谱面中...</div>
+        )}
+        <div ref={printContainerRef} className="min-h-full p-4" />
+      </div>
+      {mode === "edit" && (
         <div className="flex-1 min-h-0 flex flex-col">
           <div className="flex-1 min-w-0 overflow-auto bg-muted/20">
             <svg

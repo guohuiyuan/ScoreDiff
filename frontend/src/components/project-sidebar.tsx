@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { AudioLines, Download, FileMusic, Music2, Plus, Trash2, Upload } from "lucide-react";
+import { Download, FileMusic, Music2, Plus, Trash2, Upload } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import {
@@ -120,13 +120,13 @@ export function ProjectSidebar({ onProjectSelect, onDiffReady, onTimelineReady }
     input.click();
   }
 
-  async function handleConvert(target: "midi" | "mp3") {
+  async function handleConvert() {
     if (!selected) return;
-    setWorking(target === "midi" ? "正在生成 MIDI..." : "正在生成 MP3...");
+    setWorking("正在生成 MIDI...");
     try {
-      const result = await convertScoreMedia(selected, target);
+      const result = await convertScoreMedia(selected, "midi");
       await refreshScore(selected);
-      const url = fileUrl(target === "midi" ? result.midi_url : result.mp3_url);
+      const url = fileUrl(result.midi_url);
       if (url) window.open(url, "_blank", "noopener,noreferrer");
       setWorking(null);
     } catch (error) {
@@ -135,15 +135,15 @@ export function ProjectSidebar({ onProjectSelect, onDiffReady, onTimelineReady }
   }
 
   return (
-    <div className="h-full flex flex-col">
-      <div className="p-3 border-b border-border flex items-center justify-between">
+    <div className="h-full flex flex-col overflow-hidden">
+      <div className="p-3 border-b border-border flex items-center justify-between flex-shrink-0">
         <h2 className="text-sm font-semibold">项目列表</h2>
         <Button variant="ghost" size="sm" onClick={handleCreate}>
           <Plus />
           新建
         </Button>
       </div>
-      <ScrollArea className="flex-1">
+      <ScrollArea className="flex-1 min-h-0">
         {loading ? (
           <p className="p-3 text-sm text-muted-foreground">加载中...</p>
         ) : projects.length === 0 ? (
@@ -184,19 +184,15 @@ export function ProjectSidebar({ onProjectSelect, onDiffReady, onTimelineReady }
         )}
       </ScrollArea>
       {selected && (
-        <div className="p-3 border-t border-border">
-          <div className="grid grid-cols-2 gap-2">
-            <Button variant="outline" size="sm" className="col-span-2" onClick={handleUploadScore}>
+        <div className="p-3 border-t border-border flex-shrink-0">
+          <div className="grid grid-cols-1 gap-2">
+            <Button variant="outline" size="sm" onClick={handleUploadScore}>
               <Upload />
               上传 PDF/MIDI/MP3
             </Button>
-            <Button variant="ghost" size="sm" onClick={() => handleConvert("midi")}>
+            <Button variant="ghost" size="sm" onClick={handleConvert}>
               <FileMusic />
-              MIDI
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => handleConvert("mp3")}>
-              <AudioLines />
-              MP3
+              导出 MIDI
             </Button>
           </div>
           {working && (

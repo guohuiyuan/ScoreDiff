@@ -26,7 +26,6 @@ from app.schemas.schemas import (
 from app.services.audio_conversion_service import (
     AudioConversionError,
     convert_audio_to_midi,
-    convert_midi_to_mp3,
 )
 from app.services.diff_service import generate_diff_report
 from app.services.omr_service import OMRService
@@ -274,12 +273,6 @@ async def update_score(project_id: str, body: ScoreUpdateRequest, session: Async
     )
     generate_midi_from_musicxml(paths["musicxml"], paths["midi"])
 
-    if paths["mp3"].exists():
-        try:
-            convert_midi_to_mp3(paths["midi"], paths["mp3"])
-        except AudioConversionError:
-            paths["mp3"].unlink(missing_ok=True)
-
     project.source_type = "edited"
     project.status = "score_edited"
     await session.commit()
@@ -298,10 +291,10 @@ async def update_score(project_id: str, body: ScoreUpdateRequest, session: Async
 @router.post("/projects/{project_id}/convert", response_model=ScoreConvertResponse)
 async def convert_score_media(
     project_id: str,
-    target: str = Query(pattern="^(midi|mp3)$"),
+    target: str = Query(pattern="^(midi)$"),
     session: AsyncSession = Depends(get_session),
 ):
-    """Convert project score media between MIDI and MP3."""
+    """Convert project score to MIDI (from MusicXML or MP3)."""
     proj_svc = ProjectService(session)
     project = await proj_svc.get(project_id)
     if not project:
@@ -316,55 +309,31 @@ async def convert_score_media(
     source = "existing"
 
     try:
-        if target == "midi":
-            if not paths["midi"].exists():
-                musicxml_file = _latest_score_file(files, {"musicxml", "xml"})
-                midi_file = _latest_score_file(files, {"mid", "midi"})
-                mp3_file = _latest_score_file(files, {"mp3"})
+        if not paths["midi"].exists():
+            musicxml_file = _latest_score_file(files, {"musicxml", "xml"})
+            midi_file = _latest_score_file(files, {"mid", "midi"})
+            mp3_file = _latest_score_file(files, {"mp3"})
 
-                if midi_file:
-                    shutil.copy2(midi_file.path, paths["midi"])
-                    source = "midi"
-                elif paths["musicxml"].exists():
-                    generate_midi_from_musicxml(paths["musicxml"], paths["midi"])
-                    source = "musicxml"
-                elif musicxml_file:
-                    generate_midi_from_musicxml(musicxml_file.path, paths["midi"])
-                    shutil.copy2(musicxml_file.path, paths["musicxml"])
-                    source = "musicxml"
-                elif mp3_file:
-                    convert_audio_to_midi(mp3_file.path, paths["midi"])
-                    convert_midi_to_musicxml(paths["midi"], paths["musicxml"])
-                    groups = [normalize_note_group(g) for g in parse_midi_to_note_groups(paths["midi"])]
-                    await ScoreService(session).save_note_groups(project_id, groups)
-                    source = "mp3"
-                else:
-                    raise HTTPException(status_code=400, detail="No convertible MusicXML, MIDI, or MP3 file found")
-            else:
+            if midi_file:
+                shutil.copy2(midi_file.path, paths["midi"])
                 source = "midi"
+            elif paths["musicxml"].exists():
+                generate_midi_from_musicxml(paths["musicxml"], paths["midi"])
+                source = "musicxml"
+            elif musicxml_file:
+                generate_midi_from_musicxml(musicxml_file.path, paths["midi"])
+                shutil.copy2(musicxml_file.path, paths["musicxml"])
+                source = "musicxml"
+            elif mp3_file:
+                convert_audio_to_midi(mp3_file.path, paths["midi"])
+                convert_midi_to_musicxml(paths["midi"], paths["musicxml"])
+                groups = [normalize_note_group(g) for g in parse_midi_to_note_groups(paths["midi"])]
+                await ScoreService(session).save_note_groups(project_id, groups)
+                source = "mp3"
+            else:
+                raise HTTPException(status_code=400, detail="No convertible MusicXML, MIDI, or MP3 file found")
         else:
-            if not paths["midi"].exists():
-                if paths["musicxml"].exists():
-                    generate_midi_from_musicxml(paths["musicxml"], paths["midi"])
-                    source = "musicxml"
-                else:
-                    midi_file = _latest_score_file(files, {"mid", "midi"})
-                    musicxml_file = _latest_score_file(files, {"musicxml", "xml"})
-                    mp3_file = _latest_score_file(files, {"mp3"})
-                    if midi_file:
-                        shutil.copy2(midi_file.path, paths["midi"])
-                        source = "midi"
-                    elif musicxml_file:
-                        generate_midi_from_musicxml(musicxml_file.path, paths["midi"])
-                        shutil.copy2(musicxml_file.path, paths["musicxml"])
-                        source = "musicxml"
-                    elif mp3_file:
-                        convert_audio_to_midi(mp3_file.path, paths["midi"])
-                        convert_midi_to_musicxml(paths["midi"], paths["musicxml"])
-                        source = "mp3"
-                    else:
-                        raise HTTPException(status_code=400, detail="No convertible MusicXML, MIDI, or MP3 file found")
-            convert_midi_to_mp3(paths["midi"], paths["mp3"])
+            source = "midi"
     except AudioConversionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

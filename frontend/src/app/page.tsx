@@ -54,7 +54,7 @@ export default function Home() {
 
   return (
     <div className="h-full flex">
-      <aside className="w-64 border-r border-border flex-shrink-0">
+      <aside className="w-64 border-r border-border flex-shrink-0 h-full overflow-hidden">
         <ProjectSidebar
           onProjectSelect={(score, projectId) => {
             setSelectedProjectId(projectId);
