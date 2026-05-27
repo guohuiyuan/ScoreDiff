@@ -349,7 +349,7 @@ export function ScoreViewer({
       <div className="flex-1 flex items-center justify-center bg-muted/30">
         <div className="text-center text-muted-foreground">
           <p className="text-lg font-medium">谱面工作区</p>
-          <p className="text-sm mt-1">选择项目后可上传 PDF、MusicXML、MIDI 或 MP3</p>
+          <p className="text-sm mt-1">选择项目后可上传 PDF、MusicXML 或 MIDI</p>
         </div>
       </div>
     );

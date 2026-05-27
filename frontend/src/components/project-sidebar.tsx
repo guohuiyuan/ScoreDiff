@@ -96,7 +96,7 @@ export function ProjectSidebar({ onProjectSelect, onDiffReady, onTimelineReady }
     if (!selected) return;
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = ".musicxml,.xml,.mid,.midi,.mp3,.pdf,.png,.jpg,.jpeg,.webp";
+    input.accept = ".musicxml,.xml,.mid,.midi,.pdf,.png,.jpg,.jpeg,.webp";
     input.onchange = async () => {
       const file = input.files?.[0];
       if (!file) return;
@@ -188,7 +188,7 @@ export function ProjectSidebar({ onProjectSelect, onDiffReady, onTimelineReady }
           <div className="grid grid-cols-1 gap-2">
             <Button variant="outline" size="sm" onClick={handleUploadScore}>
               <Upload />
-              上传 PDF/MIDI/MP3
+              上传 PDF/MIDI
             </Button>
             <Button variant="ghost" size="sm" onClick={handleConvert}>
               <FileMusic />

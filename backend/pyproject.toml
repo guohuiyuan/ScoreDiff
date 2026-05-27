@@ -15,7 +15,7 @@ dependencies = [
     "pydantic-settings>=2.0",
     "fakeredis>=2.20",
     "aiofiles>=24.0",
-    "numpy>=1.26",
+    "numpy>=1.23,<2",
     "scipy>=1.12",
     "librosa>=0.10",
     "soundfile>=0.12",
@@ -23,6 +23,7 @@ dependencies = [
     "music21>=9.0",
     "opencv-python>=4.9",
     "pillow>=10.0",
+    "pymupdf>=1.24",
 ]
 
 [dependency-groups]

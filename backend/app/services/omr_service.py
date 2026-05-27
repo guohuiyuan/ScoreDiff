@@ -1,19 +1,7 @@
 """OMR Service: Image/PDF → MusicXML conversion.
 
-For V1 MVP, we implement a lightweight OMR pipeline:
-1. Image preprocessing (grayscale, threshold, deskew)
-2. Staff line detection
-3. Note head detection using template matching / contour analysis
-4. Export to MusicXML
-
-Since full OMR is extremely complex, this service provides:
-- A working API endpoint that accepts image/PDF uploads
-- Image preprocessing utilities
-- Integration point for external OMR tools (HOMR, Audiveris CLI)
-- Fallback: if no OMR engine is available, returns an error with instructions
-
-For production use, install HOMR and let this service call `homr <image>` or
-`uvx homr <image>` to produce MusicXML.
+Uses HOMR (via uvx or direct CLI) for optical music recognition.
+Falls back to Audiveris, then to basic image preprocessing.
 """
 import subprocess
 import shutil
@@ -24,7 +12,6 @@ from typing import Optional, Union
 
 import cv2
 import numpy as np
-from PIL import Image
 
 from app.core.config import settings
 
@@ -34,7 +21,7 @@ class OMRService:
         self.output_dir = settings.data_dir / "scores" / "musicxml"
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._homr_path = shutil.which("homr")
-        self._uvx_path = shutil.which("uvx") if os.getenv("SCOREDIFF_ENABLE_UVX_HOMR") == "1" else None
+        self._uvx_path = shutil.which("uvx")
         self._audiveris_path = shutil.which("audiveris")
 
     @property
@@ -45,28 +32,39 @@ class OMRService:
     def has_audiveris(self) -> bool:
         return self._audiveris_path is not None
 
-    def preprocess_image(self, image_path: Union[str, Path]) -> np.ndarray:
-        """Preprocess a score image for OMR.
+    def pdf_to_images(self, pdf_path: Union[str, Path]) -> list[Path]:
+        """Convert PDF pages to PNG images using pymupdf."""
+        import fitz
 
-        Steps: grayscale → denoise → adaptive threshold → deskew
-        """
+        pdf_path = Path(pdf_path)
+        output_dir = settings.data_dir / "scores" / "pages"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        doc = fitz.open(str(pdf_path))
+        images = []
+        for i, page in enumerate(doc):
+            pix = page.get_pixmap(dpi=300)
+            page_path = output_dir / f"{pdf_path.stem}_page_{i+1}.png"
+            pix.save(str(page_path))
+            images.append(page_path)
+        doc.close()
+        return images
+
+    def preprocess_image(self, image_path: Union[str, Path]) -> np.ndarray:
+        """Preprocess a score image for OMR."""
         img = cv2.imread(str(image_path))
         if img is None:
             raise ValueError(f"Cannot read image: {image_path}")
 
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
         denoised = cv2.fastNlMeansDenoising(gray, h=10)
-
         binary = cv2.adaptiveThreshold(
             denoised, 255,
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
             cv2.THRESH_BINARY_INV,
             15, 10,
         )
-
         binary = self._deskew(binary)
-
         return binary
 
     def _deskew(self, binary: np.ndarray) -> np.ndarray:
@@ -100,10 +98,7 @@ class OMRService:
         return rotated
 
     def detect_staff_lines(self, binary: np.ndarray) -> list[list[int]]:
-        """Detect horizontal staff lines in a preprocessed binary image.
-
-        Returns list of staff groups, each containing y-coordinates of 5 lines.
-        """
+        """Detect horizontal staff lines in a preprocessed binary image."""
         horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (40, 1))
         horizontal = cv2.morphologyEx(binary, cv2.MORPH_OPEN, horizontal_kernel)
 
@@ -159,7 +154,7 @@ class OMRService:
                     cmd,
                     capture_output=True,
                     text=True,
-                    timeout=180,
+                    timeout=300,
                 )
                 if result.returncode != 0:
                     return None
@@ -169,6 +164,12 @@ class OMRService:
                     + list(Path(tmpdir).rglob("*.xml"))
                     + list(Path(tmpdir).rglob("*.mxl"))
                 )
+                if not candidates:
+                    src_dir = image_path.parent
+                    candidates = (
+                        list(src_dir.rglob(f"{image_path.stem}*.musicxml"))
+                        + list(src_dir.rglob(f"{image_path.stem}*.xml"))
+                    )
                 if candidates:
                     shutil.copy2(candidates[0], output_path)
                     return output_path
@@ -210,13 +211,17 @@ class OMRService:
         """Main entry point: convert an image/PDF to MusicXML.
 
         Tries HOMR first, then Audiveris, then falls back to preprocessing.
-
-        Returns:
-            dict with status, musicxml_path (if successful), message
         """
         image_path = Path(image_path)
         output_path = self.output_dir / f"{project_id}.musicxml"
-        homr_input = self.pdf_to_images(image_path)[0] if image_path.suffix.lower() == ".pdf" else image_path
+
+        if image_path.suffix.lower() == ".pdf":
+            pages = self.pdf_to_images(image_path)
+            if not pages:
+                return {"status": "error", "message": "PDF 转图片失败"}
+            homr_input = pages[0]
+        else:
+            homr_input = image_path
 
         if self.has_homr:
             result = self.convert_with_homr(homr_input, output_path)
@@ -260,25 +265,3 @@ class OMRService:
                 "audiveris": self.has_audiveris,
             },
         }
-
-    def pdf_to_images(self, pdf_path: Union[str, Path]) -> list[Path]:
-        """Convert PDF pages to images for OMR processing."""
-        pdf_path = Path(pdf_path)
-        output_dir = settings.data_dir / "scores" / "pages"
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        try:
-            from PIL import Image as PILImage
-            images = []
-            img = PILImage.open(str(pdf_path))
-            for i in range(getattr(img, 'n_frames', 1)):
-                try:
-                    img.seek(i)
-                    page_path = output_dir / f"{pdf_path.stem}_page_{i+1}.png"
-                    img.save(str(page_path))
-                    images.append(page_path)
-                except EOFError:
-                    break
-            return images
-        except Exception:
-            return [pdf_path]

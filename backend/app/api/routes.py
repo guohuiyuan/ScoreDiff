@@ -23,10 +23,6 @@ from app.schemas.schemas import (
     ScoreUpdateRequest,
     TaskResponse,
 )
-from app.services.audio_conversion_service import (
-    AudioConversionError,
-    convert_audio_to_midi,
-)
 from app.services.diff_service import generate_diff_report
 from app.services.omr_service import OMRService
 from app.services.playback_service import generate_playback_timeline
@@ -51,7 +47,7 @@ from app.services.services import (
 
 router = APIRouter(prefix="/api")
 
-ALLOWED_SCORE_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".musicxml", ".xml", ".mid", ".midi", ".mp3"}
+ALLOWED_SCORE_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".musicxml", ".xml", ".mid", ".midi"}
 
 
 def _score_paths(project_id: str) -> dict[str, Path]:
@@ -294,7 +290,7 @@ async def convert_score_media(
     target: str = Query(pattern="^(midi)$"),
     session: AsyncSession = Depends(get_session),
 ):
-    """Convert project score to MIDI (from MusicXML or MP3)."""
+    """Convert project score to MIDI (from MusicXML)."""
     proj_svc = ProjectService(session)
     project = await proj_svc.get(project_id)
     if not project:
@@ -312,7 +308,6 @@ async def convert_score_media(
         if not paths["midi"].exists():
             musicxml_file = _latest_score_file(files, {"musicxml", "xml"})
             midi_file = _latest_score_file(files, {"mid", "midi"})
-            mp3_file = _latest_score_file(files, {"mp3"})
 
             if midi_file:
                 shutil.copy2(midi_file.path, paths["midi"])
@@ -324,17 +319,11 @@ async def convert_score_media(
                 generate_midi_from_musicxml(musicxml_file.path, paths["midi"])
                 shutil.copy2(musicxml_file.path, paths["musicxml"])
                 source = "musicxml"
-            elif mp3_file:
-                convert_audio_to_midi(mp3_file.path, paths["midi"])
-                convert_midi_to_musicxml(paths["midi"], paths["musicxml"])
-                groups = [normalize_note_group(g) for g in parse_midi_to_note_groups(paths["midi"])]
-                await ScoreService(session).save_note_groups(project_id, groups)
-                source = "mp3"
             else:
-                raise HTTPException(status_code=400, detail="No convertible MusicXML, MIDI, or MP3 file found")
+                raise HTTPException(status_code=400, detail="No convertible MusicXML or MIDI file found")
         else:
             source = "midi"
-    except AudioConversionError as exc:
+    except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     urls = _score_urls(project_id)
@@ -431,7 +420,7 @@ async def get_task(task_id: str, session: AsyncSession = Depends(get_session)):
 
 @router.post("/projects/{project_id}/parse-score")
 async def parse_score(project_id: str, session: AsyncSession = Depends(get_session)):
-    """Parse uploaded MusicXML, MIDI, or MP3 into note_groups."""
+    """Parse uploaded MusicXML or MIDI into note_groups."""
     proj_svc = ProjectService(session)
     project = await proj_svc.get(project_id)
     if not project:
@@ -440,7 +429,7 @@ async def parse_score(project_id: str, session: AsyncSession = Depends(get_sessi
     file_svc = FileService(session)
     files = await file_svc.get_by_project(project_id)
 
-    source_file = _latest_score_file(files, {"musicxml", "xml", "mid", "midi", "mp3"})
+    source_file = _latest_score_file(files, {"musicxml", "xml", "mid", "midi"})
     paths = _score_paths(project_id)
     musicxml_dest = paths["musicxml"]
     midi_path = paths["midi"]
@@ -449,7 +438,7 @@ async def parse_score(project_id: str, session: AsyncSession = Depends(get_sessi
 
     generated_musicxml = musicxml_dest if musicxml_dest.exists() else None
     if not source_file and not generated_musicxml:
-        raise HTTPException(status_code=400, detail="No MusicXML, MIDI, or MP3 file found for this project")
+        raise HTTPException(status_code=400, detail="No MusicXML or MIDI file found for this project")
 
     try:
         if source_file and source_file.file_type in ("musicxml", "xml"):
@@ -462,16 +451,11 @@ async def parse_score(project_id: str, session: AsyncSession = Depends(get_sessi
             convert_midi_to_musicxml(source_file.path, musicxml_dest)
             shutil.copy2(source_file.path, midi_path)
             source = "midi"
-        elif source_file and source_file.file_type == "mp3":
-            convert_audio_to_midi(source_file.path, midi_path)
-            note_groups = parse_midi_to_note_groups(midi_path)
-            convert_midi_to_musicxml(midi_path, musicxml_dest)
-            source = "mp3"
         else:
             note_groups = parse_musicxml_to_note_groups(generated_musicxml)
             generate_midi_from_musicxml(generated_musicxml, midi_path)
             source = "omr"
-    except AudioConversionError as exc:
+    except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     note_groups = [normalize_note_group(g) for g in note_groups]
