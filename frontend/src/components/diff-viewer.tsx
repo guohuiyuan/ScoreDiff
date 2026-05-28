@@ -19,125 +19,129 @@ export function DiffViewer({ diffReport, onClose }: DiffViewerProps) {
     .sort((a, b) => a.measure - b.measure);
 
   return (
-    <div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-8">
-      <div className="bg-background border border-border rounded-lg shadow-lg w-full max-w-4xl max-h-[90vh] flex flex-col">
-        <div className="flex items-center justify-between p-4 border-b border-border">
-          <h2 className="text-lg font-semibold">差异详情</h2>
-          <button
-            onClick={onClose}
-            className="text-muted-foreground hover:text-foreground text-xl leading-none"
-          >
-            &times;
-          </button>
-        </div>
-
-        <div className="p-4 border-b border-border">
-          <div className="grid grid-cols-5 gap-3 text-center">
-            <ScoreCard label="总分" value={summary.total_score} />
-            <ScoreCard label="音准" value={summary.pitch_score} />
-            <ScoreCard label="节奏" value={summary.rhythm_score} />
-            <ScoreCard label="完整度" value={summary.completeness_score} />
-            <ScoreCard label="稳定性" value={summary.stability_score} />
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-background/80 p-3 backdrop-blur-sm sm:p-6">
+      <div className="flex min-h-full items-start justify-center">
+        <div className="flex max-h-[calc(100vh-1.5rem)] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-border bg-background shadow-lg sm:max-h-[calc(100vh-3rem)]">
+          <div className="flex flex-shrink-0 items-center justify-between border-b border-border p-4">
+            <h2 className="text-lg font-semibold">差异详情</h2>
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-xl leading-none text-muted-foreground hover:text-foreground"
+            >
+              &times;
+            </button>
           </div>
-        </div>
 
-        {segment && (
-          <div className="px-4 py-3 border-b border-border">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h3 className="text-sm font-medium">本次对比片段</h3>
-              <span className="text-xs text-muted-foreground tabular-nums">
-                {formatTime(segment.start)} - {formatTime(segment.end)} · {segment.note_count} 个音符
-              </span>
-            </div>
-          </div>
-        )}
-
-        {pitch_chart && (
-          <div className="p-4 border-b border-border">
-            <div className="flex items-center justify-between gap-3 mb-2">
-              <h3 className="text-sm font-medium">音高走势对比</h3>
-              <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                <LegendItem color="#2563eb" label="参考" />
-                <LegendItem color="#dc2626" label="实测" />
+          <ScrollArea className="min-h-0 flex-1 touch-pan-y">
+            <div className="border-b border-border p-4">
+              <div className="grid grid-cols-5 gap-3 text-center">
+                <ScoreCard label="总分" value={summary.total_score} />
+                <ScoreCard label="音准" value={summary.pitch_score} />
+                <ScoreCard label="节奏" value={summary.rhythm_score} />
+                <ScoreCard label="完整度" value={summary.completeness_score} />
+                <ScoreCard label="稳定性" value={summary.stability_score} />
               </div>
             </div>
-            <PitchComparisonChart chart={pitch_chart} />
-          </div>
-        )}
 
-        <div className="p-4 border-b border-border">
-          <h3 className="text-sm font-medium mb-2">小节得分热力图</h3>
-          <div className="flex flex-wrap gap-1">
-            {sortedMeasures.map(({ measure, score }) => (
-              <div
-                key={measure}
-                className="w-8 h-8 rounded text-[10px] flex items-center justify-center font-mono"
-                style={{ backgroundColor: scoreToColor(score) }}
-                title={`第${measure}小节: ${score}分`}
-              >
-                {measure}
+            {segment && (
+              <div className="border-b border-border px-4 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-sm font-medium">本次对比片段</h3>
+                  <span className="text-xs tabular-nums text-muted-foreground">
+                    {formatTime(segment.start)} - {formatTime(segment.end)} · {segment.note_count} 个音符
+                    {segment.bpm ? ` · ${Math.round(segment.bpm)} BPM` : ""}
+                  </span>
+                </div>
               </div>
-            ))}
-          </div>
-          {weak_measures.length > 0 && (
-            <p className="text-xs text-destructive mt-2">
-              需要重点练习: 第 {weak_measures.join(", ")} 小节
-            </p>
-          )}
-        </div>
+            )}
 
-        <ScrollArea className="flex-1 min-h-0">
-          <div className="p-4">
-            <h3 className="text-sm font-medium mb-2">
-              问题详情 ({issues.length} 个)
-            </h3>
-            {issues.length === 0 ? (
-              <p className="text-sm text-muted-foreground">演奏完美，没有发现问题</p>
-            ) : (
-              <div className="space-y-2">
-                {issues.map((issue, i) => (
+            {pitch_chart && (
+              <div className="border-b border-border p-4">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <h3 className="text-sm font-medium">音高走势对比</h3>
+                  <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                    <LegendItem color="#2563eb" label="参考" />
+                    <LegendItem color="#dc2626" label="实测" />
+                  </div>
+                </div>
+                <PitchComparisonChart chart={pitch_chart} />
+              </div>
+            )}
+
+            <div className="border-b border-border p-4">
+              <h3 className="mb-2 text-sm font-medium">小节得分热力图</h3>
+              <div className="flex flex-wrap gap-1">
+                {sortedMeasures.map(({ measure, score }) => (
                   <div
-                    key={i}
-                    className="flex items-start gap-3 p-2 rounded border border-border"
+                    key={measure}
+                    className="flex h-8 w-8 items-center justify-center rounded font-mono text-[10px]"
+                    style={{ backgroundColor: scoreToColor(score) }}
+                    title={`第${measure}小节: ${score}分`}
                   >
-                    <div
-                      className="w-1 self-stretch rounded-full flex-shrink-0"
-                      style={{ backgroundColor: issueColorToCss(issue.color) }}
-                    />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <Badge
-                          variant={issue.severity === "error" ? "destructive" : "secondary"}
-                          className="text-[10px] px-1.5 py-0"
-                        >
-                          {issue.severity === "error" ? "错误" : "警告"}
-                        </Badge>
-                        <span className="text-xs text-muted-foreground">
-                          第{issue.measure}小节 · 第{issue.beat}拍
-                        </span>
-                      </div>
-                      <p className="text-sm mt-1">{issue.feedback}</p>
-                    </div>
+                    {measure}
                   </div>
                 ))}
               </div>
-            )}
-          </div>
-        </ScrollArea>
+              {weak_measures.length > 0 && (
+                <p className="mt-2 text-xs text-destructive">
+                  需要重点练习: 第 {weak_measures.join(", ")} 小节
+                </p>
+              )}
+            </div>
 
-        <div className="p-4 border-t border-border">
-          <h3 className="text-sm font-medium mb-2">音符着色图例</h3>
-          <div className="flex flex-wrap gap-3 text-xs">
-            <LegendItem color="#22c55e" label="正确" />
-            <LegendItem color="#eab308" label="可接受/偏差" />
-            <LegendItem color="#ef4444" label="错音" />
-            <LegendItem color="#3b82f6" label="提前" />
-            <LegendItem color="#a855f7" label="延后" />
-            <LegendItem color="#6b7280" label="缺失" />
-          </div>
-          <p className="text-xs text-muted-foreground mt-2">
-            共 {Object.keys(color_map).length} 个音符组已着色
-          </p>
+            <div className="border-b border-border p-4">
+              <h3 className="mb-2 text-sm font-medium">
+                问题详情 ({issues.length} 个)
+              </h3>
+              {issues.length === 0 ? (
+                <p className="text-sm text-muted-foreground">演奏完美，没有发现问题</p>
+              ) : (
+                <div className="space-y-2">
+                  {issues.map((issue, i) => (
+                    <div
+                      key={i}
+                      className="flex items-start gap-3 rounded border border-border p-2"
+                    >
+                      <div
+                        className="w-1 flex-shrink-0 self-stretch rounded-full"
+                        style={{ backgroundColor: issueColorToCss(issue.color) }}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <Badge
+                            variant={issue.severity === "error" ? "destructive" : "secondary"}
+                            className="px-1.5 py-0 text-[10px]"
+                          >
+                            {issue.severity === "error" ? "错误" : "警告"}
+                          </Badge>
+                          <span className="text-xs text-muted-foreground">
+                            第{issue.measure}小节 · 第{issue.beat}拍
+                          </span>
+                        </div>
+                        <p className="mt-1 text-sm">{issue.feedback}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="p-4">
+              <h3 className="mb-2 text-sm font-medium">音符着色图例</h3>
+              <div className="flex flex-wrap gap-3 text-xs">
+                <LegendItem color="#22c55e" label="正确" />
+                <LegendItem color="#eab308" label="可接受/偏差" />
+                <LegendItem color="#ef4444" label="错音" />
+                <LegendItem color="#3b82f6" label="提前" />
+                <LegendItem color="#a855f7" label="延后" />
+                <LegendItem color="#6b7280" label="缺失" />
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">
+                共 {Object.keys(color_map).length} 个音符组已着色
+              </p>
+            </div>
+          </ScrollArea>
         </div>
       </div>
     </div>

@@ -30,6 +30,7 @@ from app.services.omr_service import OMRService
 from app.services.playback_service import generate_playback_timeline
 from app.services.pitch_service import build_pitch_comparison_chart
 from app.services.recording_service import RecordingService
+from app.services.rhythm_service import detect_onsets
 from app.services.score_parser import (
     convert_midi_to_musicxml,
     export_note_groups_to_musicxml,
@@ -54,6 +55,8 @@ router = APIRouter(prefix="/api")
 ALLOWED_SCORE_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".musicxml", ".xml", ".mid", ".midi"}
 ALLOWED_INSTRUMENTS = {"violin", "piano", "flute", "guitar", "cello", "clarinet"}
 BASE_SCORE_BPM = 120.0
+AUTO_BPM_ONSET_COUNT = 12
+AUTO_BPM_MIN_MATCH_RATIO = 0.55
 
 
 def _score_paths(project_id: str) -> dict[str, Path]:
@@ -205,6 +208,119 @@ def _analysis_note_groups(
     segment["duration"] = round(segment["duration"] * scale, 4)
     segment["bpm"] = round(BASE_SCORE_BPM / scale, 3)
     return _scale_note_group_times(selected, scale), segment
+
+
+def _score_onsets_for_auto_bpm(note_groups: list[dict]) -> list[float]:
+    onsets: list[float] = []
+    for group in note_groups:
+        if group.get("type", "").split(":")[0] == "rest":
+            continue
+
+        start = float(group.get("start") or 0.0)
+        if onsets and abs(onsets[-1] - start) < 0.03:
+            continue
+
+        onsets.append(start)
+        if len(onsets) >= AUTO_BPM_ONSET_COUNT:
+            break
+    return onsets
+
+
+def _match_onset_grid(expected: list[float], detected: list[float], tolerance: float) -> tuple[int, float]:
+    if not expected or not detected:
+        return 0, tolerance
+
+    scan_index = 0
+    distances: list[float] = []
+    for target in expected:
+        while scan_index < len(detected) and detected[scan_index] < target - tolerance:
+            scan_index += 1
+
+        best_index: int | None = None
+        best_distance = tolerance
+        for index in range(scan_index, min(scan_index + 4, len(detected))):
+            distance = abs(detected[index] - target)
+            if distance <= best_distance:
+                best_index = index
+                best_distance = distance
+
+        if best_index is not None:
+            distances.append(best_distance)
+            scan_index = best_index + 1
+
+    if not distances:
+        return 0, tolerance
+    return len(distances), sum(distances) / len(distances)
+
+
+def _estimate_bpm_from_first_onsets(
+    note_groups: list[dict],
+    audio_path: str | Path,
+    fallback_bpm: float | None = None,
+) -> float:
+    fallback = min(240.0, max(40.0, float(fallback_bpm or BASE_SCORE_BPM)))
+    score_onsets = _score_onsets_for_auto_bpm(note_groups)
+    if len(score_onsets) < 3:
+        return fallback
+
+    try:
+        detected_onsets = [float(time) for time in detect_onsets(audio_path)["onset_times"]]
+    except Exception:
+        return fallback
+
+    if len(detected_onsets) < 3:
+        return fallback
+
+    base_score_onsets = [time - score_onsets[0] for time in score_onsets]
+    best_bpm = fallback
+    best_matches = 0
+    best_error = 999.0
+    best_ratio = 0.0
+
+    for candidate_bpm in range(40, 241):
+        scale = _time_scale_for_bpm(candidate_bpm)
+        expected = [time * scale for time in base_score_onsets]
+        positive_steps = [
+            expected[index] - expected[index - 1]
+            for index in range(1, len(expected))
+            if expected[index] > expected[index - 1]
+        ]
+        base_step = sorted(positive_steps)[len(positive_steps) // 2] if positive_steps else 0.5
+        tolerance = min(0.35, max(0.12, base_step * 0.35))
+
+        for anchor_index in range(min(3, len(detected_onsets))):
+            offset = detected_onsets[anchor_index] - expected[0]
+            shifted = [time - offset for time in detected_onsets[anchor_index:]]
+            matches, mean_error = _match_onset_grid(expected, shifted, tolerance)
+            ratio = matches / len(expected)
+            if ratio > best_ratio or (ratio == best_ratio and mean_error < best_error):
+                best_bpm = float(candidate_bpm)
+                best_matches = matches
+                best_error = mean_error
+                best_ratio = ratio
+
+    min_matches = max(3, int(len(base_score_onsets) * AUTO_BPM_MIN_MATCH_RATIO))
+    if best_matches < min_matches:
+        return fallback
+
+    return best_bpm
+
+
+def _real_analysis_note_groups(
+    note_groups: list[dict],
+    audio_path: str | Path,
+    segment_start: float | None = None,
+    segment_end: float | None = None,
+    bpm: float | None = None,
+) -> tuple[list[dict], dict]:
+    selected, segment = _segment_note_groups(note_groups, segment_start, segment_end)
+    selected, segment = _drop_leading_score_rests_for_audio_alignment(selected, segment)
+    estimated_bpm = _estimate_bpm_from_first_onsets(selected, audio_path, bpm)
+    scale = _time_scale_for_bpm(estimated_bpm)
+    segment["duration"] = round(segment["duration"] * scale, 4)
+    segment["bpm"] = round(BASE_SCORE_BPM / scale, 3)
+    scaled = _scale_note_group_times(selected, scale)
+    return _clip_analysis_to_audio_duration(scaled, segment, audio_path)
 
 
 def _clip_analysis_to_audio_duration(
@@ -774,13 +890,11 @@ async def analyze_performance(
     if not note_groups:
         raise HTTPException(status_code=400, detail="当前项目没有可分析的乐谱音符")
 
-    selected_groups, segment = _analysis_note_groups(note_groups, segment_start, segment_end, bpm)
-
     if mode == "real":
-        selected_groups, segment = _drop_leading_score_rests_for_audio_alignment(selected_groups, segment)
-        selected_groups, segment = _clip_analysis_to_audio_duration(selected_groups, segment, perf.audio_path)
+        selected_groups, segment = _real_analysis_note_groups(note_groups, perf.audio_path, segment_start, segment_end, bpm)
         scoring = generate_real_scoring(perf.audio_path, selected_groups, performance_id)
     else:
+        selected_groups, segment = _analysis_note_groups(note_groups, segment_start, segment_end, bpm)
         scoring = generate_mock_scoring(selected_groups, performance_id)
 
     await _save_scoring_results(session, perf_svc, perf, performance_id, scoring, segment)
@@ -851,12 +965,11 @@ async def _run_analysis_task(
             return
 
         try:
-            selected_groups, segment = _analysis_note_groups(note_groups, segment_start, segment_end, bpm)
             if mode == "real":
-                selected_groups, segment = _drop_leading_score_rests_for_audio_alignment(selected_groups, segment)
-                selected_groups, segment = _clip_analysis_to_audio_duration(selected_groups, segment, perf.audio_path)
+                selected_groups, segment = _real_analysis_note_groups(note_groups, perf.audio_path, segment_start, segment_end, bpm)
                 scoring = generate_real_scoring(perf.audio_path, selected_groups, performance_id)
             else:
+                selected_groups, segment = _analysis_note_groups(note_groups, segment_start, segment_end, bpm)
                 scoring = generate_mock_scoring(selected_groups, performance_id)
         except Exception as exc:
             await task_svc.update(task_id, status="failed", progress=1.0, error=str(exc))
