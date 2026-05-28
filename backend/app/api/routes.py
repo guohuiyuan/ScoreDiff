@@ -28,6 +28,7 @@ from app.schemas.schemas import (
 from app.services.diff_service import generate_diff_report
 from app.services.omr_service import OMRService
 from app.services.playback_service import generate_playback_timeline
+from app.services.pitch_service import build_pitch_comparison_chart
 from app.services.recording_service import RecordingService
 from app.services.score_parser import (
     convert_midi_to_musicxml,
@@ -126,6 +127,105 @@ def _project_response(project) -> ProjectResponse:
         created_at=project.created_at,
         updated_at=project.updated_at,
     )
+
+
+def _max_score_end(note_groups: list[dict]) -> float:
+    return max((float(group.get("end") or 0) for group in note_groups), default=0.0)
+
+
+def _segment_note_groups(
+    note_groups: list[dict],
+    segment_start: float | None = None,
+    segment_end: float | None = None,
+) -> tuple[list[dict], dict]:
+    full_end = _max_score_end(note_groups)
+    start = max(0.0, float(segment_start or 0.0))
+    end = float(segment_end) if segment_end is not None else full_end
+    end = min(max(end, start), full_end) if full_end > 0 else max(end, start)
+    if end <= start:
+        raise HTTPException(status_code=400, detail="Comparison segment must have a positive duration")
+
+    selected: list[dict] = []
+    for group in note_groups:
+        group_start = float(group.get("start") or 0.0)
+        group_end = float(group.get("end") or group_start)
+        if group_end <= start or group_start >= end:
+            continue
+
+        clipped_start = max(group_start, start)
+        clipped_end = min(group_end, end)
+        if clipped_end <= clipped_start:
+            continue
+
+        rebased = dict(group)
+        rebased["start"] = round(clipped_start - start, 4)
+        rebased["end"] = round(clipped_end - start, 4)
+        selected.append(rebased)
+
+    if not selected:
+        raise HTTPException(status_code=400, detail="Selected comparison segment does not contain any score notes")
+
+    return selected, {
+        "start": round(start, 4),
+        "end": round(end, 4),
+        "duration": round(end - start, 4),
+        "note_count": len([g for g in selected if g.get("type", "").split(":")[0] != "rest"]),
+    }
+
+
+def _selected_original_groups(note_groups: list[dict], result_ids: set[str]) -> list[dict]:
+    return [group for group in note_groups if group.get("note_group_id") in result_ids]
+
+
+def _infer_segment_from_groups(groups: list[dict]) -> dict:
+    if not groups:
+        return {"start": 0.0, "end": 0.0, "duration": 0.0, "note_count": 0}
+    start = min(float(group.get("start") or 0.0) for group in groups)
+    end = max(float(group.get("end") or start) for group in groups)
+    return {
+        "start": round(start, 4),
+        "end": round(end, 4),
+        "duration": round(max(0.0, end - start), 4),
+        "note_count": len([g for g in groups if g.get("type", "").split(":")[0] != "rest"]),
+    }
+
+
+async def _save_scoring_results(
+    session: AsyncSession,
+    perf_svc: PerformanceService,
+    perf,
+    performance_id: str,
+    scoring: dict,
+    segment: dict,
+) -> None:
+    await perf_svc.clear_results(performance_id)
+
+    perf.total_score = scoring["total_score"]
+    perf.pitch_score = scoring["pitch_score"]
+    perf.rhythm_score = scoring["rhythm_score"]
+    perf.completeness_score = scoring["completeness_score"]
+    perf.stability_score = scoring["stability_score"]
+    perf.status = "analyzed"
+    perf.segment_start = segment["start"]
+    perf.segment_end = segment["end"]
+    perf.segment_duration = segment["duration"]
+    perf.segment_note_count = segment["note_count"]
+
+    for nr_data in scoring["note_results"]:
+        nr = NoteResultModel(
+            performance_id=performance_id,
+            note_group_id=nr_data["note_group_id"],
+            measure=nr_data["measure"],
+            beat=nr_data["beat"],
+            target_json=nr_data["target_json"],
+            detected_json=nr_data["detected_json"],
+            pitch_error_cents=nr_data["pitch_error_cents"],
+            onset_error_ms=nr_data["onset_error_ms"],
+            duration_error_ms=nr_data["duration_error_ms"],
+            status=nr_data["status"],
+            feedback=nr_data["feedback"],
+        )
+        session.add(nr)
 
 
 @router.post("/projects", response_model=ProjectResponse)
@@ -544,7 +644,13 @@ async def get_playback_timeline(project_id: str, bpm: float = 120.0, session: As
 
 
 @router.post("/performances/{performance_id}/analyze")
-async def analyze_performance(performance_id: str, mode: str = "mock", session: AsyncSession = Depends(get_session)):
+async def analyze_performance(
+    performance_id: str,
+    mode: str = Query("mock", pattern="^(mock|real)$"),
+    segment_start: float | None = Query(None, ge=0),
+    segment_end: float | None = Query(None, ge=0),
+    session: AsyncSession = Depends(get_session),
+):
     """Run scoring analysis on a performance. mode='mock' or 'real'."""
     perf_svc = PerformanceService(session)
     perf = await perf_svc.get(performance_id)
@@ -556,43 +662,26 @@ async def analyze_performance(performance_id: str, mode: str = "mock", session: 
     if not note_groups:
         raise HTTPException(status_code=400, detail="当前项目没有可分析的乐谱音符")
 
+    selected_groups, segment = _segment_note_groups(note_groups, segment_start, segment_end)
+
     if mode == "real":
-        scoring = generate_real_scoring(perf.audio_path, note_groups, performance_id)
+        scoring = generate_real_scoring(perf.audio_path, selected_groups, performance_id)
     else:
-        scoring = generate_mock_scoring(note_groups, performance_id)
+        scoring = generate_mock_scoring(selected_groups, performance_id)
 
-    perf.total_score = scoring["total_score"]
-    perf.pitch_score = scoring["pitch_score"]
-    perf.rhythm_score = scoring["rhythm_score"]
-    perf.completeness_score = scoring["completeness_score"]
-    perf.stability_score = scoring["stability_score"]
-    perf.status = "analyzed"
-
-    for nr_data in scoring["note_results"]:
-        nr = NoteResultModel(
-            performance_id=performance_id,
-            note_group_id=nr_data["note_group_id"],
-            measure=nr_data["measure"],
-            beat=nr_data["beat"],
-            target_json=nr_data["target_json"],
-            detected_json=nr_data["detected_json"],
-            pitch_error_cents=nr_data["pitch_error_cents"],
-            onset_error_ms=nr_data["onset_error_ms"],
-            duration_error_ms=nr_data["duration_error_ms"],
-            status=nr_data["status"],
-            feedback=nr_data["feedback"],
-        )
-        session.add(nr)
-
+    await _save_scoring_results(session, perf_svc, perf, performance_id, scoring, segment)
     await session.commit()
 
-    return {"status": "analyzed", "total_score": scoring["total_score"], "mode": mode}
+    return {"status": "analyzed", "total_score": scoring["total_score"], "mode": mode, "segment": segment}
 
 
 @router.post("/performances/{performance_id}/analyze-async")
 async def analyze_performance_async(
     performance_id: str,
     background_tasks: BackgroundTasks,
+    mode: str = Query("mock", pattern="^(mock|real)$"),
+    segment_start: float | None = Query(None, ge=0),
+    segment_end: float | None = Query(None, ge=0),
     session: AsyncSession = Depends(get_session),
 ):
     """Start async analysis — returns a task_id for progress polling."""
@@ -604,12 +693,19 @@ async def analyze_performance_async(
     task_svc = TaskService(session)
     task = await task_svc.create(task_type="analyze", project_id=perf.project_id)
 
-    background_tasks.add_task(_run_analysis_task, task.id, performance_id, perf.project_id)
+    background_tasks.add_task(_run_analysis_task, task.id, performance_id, perf.project_id, mode, segment_start, segment_end)
 
     return {"task_id": task.id, "status": "pending"}
 
 
-async def _run_analysis_task(task_id: str, performance_id: str, project_id: str):
+async def _run_analysis_task(
+    task_id: str,
+    performance_id: str,
+    project_id: str,
+    mode: str = "mock",
+    segment_start: float | None = None,
+    segment_end: float | None = None,
+):
     """Background task that simulates progress updates via redis."""
     from app.db.session import async_session_factory
 
@@ -638,30 +734,18 @@ async def _run_analysis_task(task_id: str, performance_id: str, project_id: str)
             await redis_client.hset(f"task:{task_id}", mapping={"progress": "1.0", "message": "失败"})
             return
 
-        scoring = generate_mock_scoring(note_groups, performance_id)
+        try:
+            selected_groups, segment = _segment_note_groups(note_groups, segment_start, segment_end)
+            if mode == "real":
+                scoring = generate_real_scoring(perf.audio_path, selected_groups, performance_id)
+            else:
+                scoring = generate_mock_scoring(selected_groups, performance_id)
+        except Exception as exc:
+            await task_svc.update(task_id, status="failed", progress=1.0, error=str(exc))
+            await redis_client.hset(f"task:{task_id}", mapping={"progress": "1.0", "message": "分析失败"})
+            return
 
-        perf.total_score = scoring["total_score"]
-        perf.pitch_score = scoring["pitch_score"]
-        perf.rhythm_score = scoring["rhythm_score"]
-        perf.completeness_score = scoring["completeness_score"]
-        perf.stability_score = scoring["stability_score"]
-        perf.status = "analyzed"
-
-        for nr_data in scoring["note_results"]:
-            nr = NoteResultModel(
-                performance_id=performance_id,
-                note_group_id=nr_data["note_group_id"],
-                measure=nr_data["measure"],
-                beat=nr_data["beat"],
-                target_json=nr_data["target_json"],
-                detected_json=nr_data["detected_json"],
-                pitch_error_cents=nr_data["pitch_error_cents"],
-                onset_error_ms=nr_data["onset_error_ms"],
-                duration_error_ms=nr_data["duration_error_ms"],
-                status=nr_data["status"],
-                feedback=nr_data["feedback"],
-            )
-            session.add(nr)
+        await _save_scoring_results(session, perf_svc, perf, performance_id, scoring, segment)
 
         await task_svc.update(task_id, status="completed", progress=1.0, message="分析完成")
         await session.commit()
@@ -703,6 +787,17 @@ async def get_performance_diff(performance_id: str, session: AsyncSession = Depe
     if not results:
         raise HTTPException(status_code=400, detail="没有分析结果，请先分析录音")
 
+    score_svc = ScoreService(session)
+    note_groups = await score_svc.get_note_groups(perf.project_id)
+    result_ids = {result.note_group_id for result in results}
+    selected_groups = _selected_original_groups(note_groups, result_ids)
+    segment = {
+        "start": round(float(perf.segment_start), 4),
+        "end": round(float(perf.segment_end), 4),
+        "duration": round(float(perf.segment_duration), 4),
+        "note_count": int(perf.segment_note_count or 0),
+    } if perf.segment_start is not None and perf.segment_end is not None else _infer_segment_from_groups(selected_groups)
+
     scoring_result = {
         "total_score": perf.total_score,
         "pitch_score": perf.pitch_score,
@@ -724,4 +819,11 @@ async def get_performance_diff(performance_id: str, session: AsyncSession = Depe
     }
 
     diff_report = generate_diff_report(scoring_result)
+    diff_report["segment"] = segment
+    diff_report["pitch_chart"] = build_pitch_comparison_chart(
+        perf.audio_path,
+        selected_groups,
+        segment["start"],
+        segment["end"],
+    )
     return diff_report

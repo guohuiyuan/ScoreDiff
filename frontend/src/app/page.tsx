@@ -13,6 +13,7 @@ import {
   analyzePerformanceAsync,
   fetchDiff,
   pollTaskProgress,
+  type CompareSegment,
   type DiffReport,
   type PlaybackTimeline,
   type Project,
@@ -31,16 +32,17 @@ export default function Home() {
   const [showDiffViewer, setShowDiffViewer] = useState(false);
   const [taskProgress, setTaskProgress] = useState<TaskProgress | null>(null);
   const [scoreRevision, setScoreRevision] = useState(0);
+  const [compareRange, setCompareRange] = useState<[number, number]>([0, 0]);
   const noteGroups = scoreData?.note_groups ?? [];
   const scoreViewerKey = `${selectedProjectId ?? "none"}:${scoreRevision}`;
 
   const handleRecordingComplete = useCallback(
-    async (blob: Blob, filename: string) => {
+    async (blob: Blob, filename: string, segment: Pick<CompareSegment, "start" | "end">) => {
       if (!selectedProjectId) return;
       const file = new File([blob], filename, { type: blob.type });
       const { performance_id } = await uploadPerformance(selectedProjectId, file);
 
-      const { task_id } = await analyzePerformanceAsync(performance_id);
+      const { task_id } = await analyzePerformanceAsync(performance_id, segment, "real");
       setTaskProgress({ task_id, status: "pending", progress: 0, message: "准备分析..." });
 
       pollTaskProgress(task_id, async (progress) => {
@@ -58,6 +60,12 @@ export default function Home() {
     [selectedProjectId],
   );
 
+  const handleTimelineReady = useCallback((nextTimeline: PlaybackTimeline | null) => {
+    setTimeline(nextTimeline);
+    const duration = Math.max(0, nextTimeline?.total_duration ?? 0);
+    setCompareRange(duration > 0 ? [0, duration] : [0, 0]);
+  }, []);
+
   return (
     <div className="h-full flex">
       <aside className="w-64 border-r border-border flex-shrink-0 h-full overflow-hidden">
@@ -71,13 +79,14 @@ export default function Home() {
             setShowDiffViewer(false);
             setTaskProgress(null);
             setPlaybackTime(0);
+            setCompareRange([0, 0]);
             setSeekRequest((request) => ({ time: 0, version: request.version + 1 }));
           }}
           onDiffReady={(report) => {
             setDiffReport(report);
             if (report) setShowDiffViewer(true);
           }}
-          onTimelineReady={setTimeline}
+          onTimelineReady={handleTimelineReady}
         />
       </aside>
       <main className="flex-1 min-w-0 flex flex-col">
@@ -88,36 +97,40 @@ export default function Home() {
           noteGroups={noteGroups}
           currentTime={playbackTime}
           colorMap={diffReport?.color_map}
+          compareRange={compareRange}
           onSeek={(time) => {
             setPlaybackTime(time);
             setSeekRequest((request) => ({ time, version: request.version + 1 }));
           }}
+          onCompareRangeChange={setCompareRange}
           onScoreSaved={(score) => {
             setScoreData(score);
             setScoreRevision((revision) => revision + 1);
           }}
         />
         {taskProgress && <TaskProgressBar progress={taskProgress} />}
-        <PracticeRecorder
-          projectId={selectedProjectId}
-          onRecordingComplete={handleRecordingComplete}
-        />
         <PlaybackBar
           key={`playback:${selectedProjectId ?? "none"}:${timeline?.total_duration ?? 0}`}
           timeline={timeline}
           instrument={selectedProject?.instrument ?? "violin"}
           seekRequest={seekRequest}
           onTimeUpdate={setPlaybackTime}
+          compareRange={compareRange}
         />
       </main>
-      {diffReport && (
-        <aside className="hidden w-72 flex-shrink-0 border-l border-border xl:block 2xl:w-80">
+      <aside className="w-80 flex-shrink-0 border-l border-border bg-background flex flex-col">
+        <PracticeRecorder
+          projectId={selectedProjectId}
+          compareRange={compareRange}
+          onRecordingComplete={handleRecordingComplete}
+        />
+        <div className="min-h-0 flex-1">
           <IssuePanel
             diffReport={diffReport}
             onViewDetails={() => setShowDiffViewer(true)}
           />
-        </aside>
-      )}
+        </div>
+      </aside>
 
       {showDiffViewer && (
         <DiffViewer

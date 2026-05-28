@@ -39,7 +39,7 @@ export function IssuePanel({ diffReport, onViewDetails }: IssuePanelProps) {
     );
   }
 
-  const { summary, issues, weak_measures } = diffReport;
+  const { summary, issues, weak_measures, segment } = diffReport;
 
   return (
     <div className="h-full flex flex-col">
@@ -64,6 +64,11 @@ export function IssuePanel({ diffReport, onViewDetails }: IssuePanelProps) {
           <span>节奏 {summary.rhythm_score.toFixed(0)}</span>
           <span>完整 {summary.completeness_score.toFixed(0)}</span>
         </div>
+        {segment && (
+          <p className="text-xs text-muted-foreground tabular-nums">
+            片段 {formatTime(segment.start)} - {formatTime(segment.end)} · {segment.note_count} 个音符
+          </p>
+        )}
         {weak_measures.length > 0 && (
           <p className="text-xs text-destructive mt-1">
             薄弱小节: {weak_measures.join(", ")}
@@ -113,4 +118,14 @@ function colorToCss(color: string): string {
     gray: "#6b7280",
   };
   return map[color] || color;
+}
+
+function formatTime(seconds: number): string {
+  const safeSeconds = Math.max(0, seconds);
+  const m = Math.floor(safeSeconds / 60);
+  const s = Math.floor(safeSeconds % 60);
+  const tenths = Math.floor((safeSeconds - Math.floor(safeSeconds)) * 10);
+  return tenths > 0
+    ? `${m}:${s.toString().padStart(2, "0")}.${tenths}`
+    : `${m}:${s.toString().padStart(2, "0")}`;
 }

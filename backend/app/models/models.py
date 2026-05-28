@@ -57,6 +57,10 @@ class Performance(SQLModel, table=True):
     project_id: str
     audio_path: str
     status: str = "uploaded"
+    segment_start: Optional[float] = None
+    segment_end: Optional[float] = None
+    segment_duration: Optional[float] = None
+    segment_note_count: Optional[int] = None
     total_score: Optional[float] = None
     pitch_score: Optional[float] = None
     rhythm_score: Optional[float] = None

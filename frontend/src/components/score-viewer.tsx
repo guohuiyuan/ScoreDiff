@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { Edit3, Minus, MousePointer2, Plus, Save, Trash2 } from "lucide-react";
+import { Edit3, Flag, Minus, MousePointer2, Plus, Save, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   fileUrl,
@@ -17,7 +17,9 @@ interface ScoreViewerProps {
   noteGroups?: NoteGroup[];
   currentTime?: number;
   colorMap?: Record<string, string>;
+  compareRange?: [number, number];
   onSeek?: (time: number) => void;
+  onCompareRangeChange?: (range: [number, number]) => void;
   onScoreSaved?: (score: ScoreData) => void;
 }
 
@@ -28,6 +30,13 @@ type OsmdNote = {
     noteheadColor?: string;
     stemColor?: string;
   };
+};
+type ScorePoint = {
+  x: number;
+  y: number;
+  staffTop: number;
+  staffBottom: number;
+  measureRight: number;
 };
 type OsmdVoiceEntry = {
   notes: OsmdNote[];
@@ -112,11 +121,15 @@ export function ScoreViewer({
   noteGroups = [],
   currentTime = 0,
   colorMap,
+  compareRange,
   onSeek,
+  onCompareRangeChange,
   onScoreSaved,
 }: ScoreViewerProps) {
   const printScrollRef = useRef<HTMLDivElement>(null);
   const printContainerRef = useRef<HTMLDivElement>(null);
+  const editScrollRef = useRef<HTMLDivElement>(null);
+  const editSvgRef = useRef<SVGSVGElement>(null);
   const osmdRef = useRef<OsmdInstance | null>(null);
   const dragRef = useRef<{ index: number; startY: number; startPitch: number } | null>(null);
   const draftIdRef = useRef(0);
@@ -145,7 +158,11 @@ export function ScoreViewer({
   const visibleColumns = Math.min(MEASURES_PER_SYSTEM, Math.max(1, measures.length));
   const svgWidth = Math.max(900, LEFT_PAD + visibleColumns * MEASURE_WIDTH + RIGHT_PAD);
   const svgHeight = systemCount * SYSTEM_HEIGHT + 32;
-  const activePoint = activeIndex >= 0 ? notePoint(draft[activeIndex], measures) : null;
+  const normalizedCompareRange = normalizeCompareRange(compareRange, draft);
+  const playbackCursorPoint = cursorPointForTime(currentTime, draft, measures);
+  const rangeStartPoint = cursorPointForTime(normalizedCompareRange[0], draft, measures, "start");
+  const rangeEndPoint = cursorPointForTime(normalizedCompareRange[1], draft, measures, "end");
+  const rangeLabel = formatRangeLabel(normalizedCompareRange, draft);
   const timeSignatureParts = splitTimeSignature(scoreMetadata.timeSignature);
   const keySignatureText = keySignatureLabel(scoreMetadata.keyFifths, scoreMetadata.keyMode);
 
@@ -252,6 +269,22 @@ export function ScoreViewer({
     markDraft(next, next.length ? next[Math.min(selectedIndex, next.length - 1)].note_group_id : null);
   }
 
+  function setSelectedAsRangeStart() {
+    const anchor = selected ?? activeGroup ?? draft[0];
+    if (!anchor) return;
+    const next = normalizeCompareRange([anchor.start, normalizedCompareRange[1]], draft, "start");
+    onCompareRangeChange?.(next);
+    onSeek?.(next[0]);
+  }
+
+  function setSelectedAsRangeEnd() {
+    const anchor = selected ?? activeGroup ?? draft[draft.length - 1];
+    if (!anchor) return;
+    const next = normalizeCompareRange([normalizedCompareRange[0], anchor.end], draft, "end");
+    onCompareRangeChange?.(next);
+    onSeek?.(next[0]);
+  }
+
   function insertDraftNote(note: NoteGroup) {
     const normalized = normalizeClientGroup(note);
     markDraft([...draft, normalized], normalized.note_group_id);
@@ -303,6 +336,8 @@ export function ScoreViewer({
 
   function handlePointerDown(event: ReactPointerEvent<SVGGElement>, index: number) {
     event.stopPropagation();
+    const group = draft[index];
+    if (group) onSeek?.(group.start);
     if (editMode !== "select") {
       setSelectedIndex(index);
       return;
@@ -510,6 +545,28 @@ export function ScoreViewer({
   }, [viewMode, activeIndex, printReadyRevision, draft]);
 
   useEffect(() => {
+    if (viewMode !== "edit") return;
+    const localMeasures = Array.from(new Set(draft.map((item) => item.measure || 1))).sort((a, b) => a - b);
+    const point = cursorPointForTime(currentTime, draft, localMeasures);
+    const scroller = editScrollRef.current;
+    const svg = editSvgRef.current;
+    if (!point || !scroller || !svg) return;
+
+    const svgRect = svg.getBoundingClientRect();
+    const scaleY = svgRect.height / Math.max(1, svgHeight);
+    const cursorTop = point.staffTop * scaleY;
+    const cursorBottom = (point.staffBottom + 88) * scaleY;
+    const margin = 48;
+
+    if (cursorTop < scroller.scrollTop + margin || cursorBottom > scroller.scrollTop + scroller.clientHeight - margin) {
+      scroller.scrollTo({
+        top: Math.max(0, cursorTop - scroller.clientHeight * 0.28),
+        behavior: "auto",
+      });
+    }
+  }, [viewMode, currentTime, draft, svgHeight]);
+
+  useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
       if (target && ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName)) return;
@@ -643,6 +700,29 @@ export function ScoreViewer({
         </div>
 
         <div className="flex items-center gap-2">
+          {draft.length > 0 && (
+            <div className="hidden items-center gap-1 rounded-full border border-teal-200 bg-teal-50/80 px-2 py-1 text-xs text-teal-900 lg:flex">
+              <span className="max-w-56 truncate">{rangeLabel}</span>
+              <button
+                type="button"
+                className="inline-flex h-6 items-center gap-1 rounded-full border border-teal-300 bg-white px-2 text-[11px] font-medium text-teal-800 hover:bg-teal-100 disabled:opacity-50"
+                onClick={setSelectedAsRangeStart}
+                disabled={!selected && !activeGroup}
+              >
+                <Flag className="size-3" />
+                起点
+              </button>
+              <button
+                type="button"
+                className="inline-flex h-6 items-center gap-1 rounded-full border border-rose-300 bg-white px-2 text-[11px] font-medium text-rose-800 hover:bg-rose-50 disabled:opacity-50"
+                onClick={setSelectedAsRangeEnd}
+                disabled={!selected && !activeGroup}
+              >
+                <Flag className="size-3" />
+                终点
+              </button>
+            </div>
+          )}
           {selected && viewMode === "edit" && (
             <span className="hidden rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-700 md:inline">
               第 {selected.measure} 小节 · 第 {selected.beat} 拍 · {formatTargetNames(selected)}
@@ -672,7 +752,7 @@ export function ScoreViewer({
 
       <div
         ref={printScrollRef}
-        className="flex-1 min-h-0 overflow-auto cursor-pointer"
+        className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden cursor-pointer"
         style={{ display: viewMode === "print" ? "block" : "none" }}
         onPointerDown={handlePrintPointerDown}
       >
@@ -684,16 +764,20 @@ export function ScoreViewer({
             正在播放：第 {activeGroup.measure} 小节 第 {activeGroup.beat} 拍 · {formatTargetNames(activeGroup)}
           </div>
         )}
-        <div ref={printContainerRef} className="min-h-full p-4" />
+        <div
+          ref={printContainerRef}
+          className="min-h-full p-4 [&_svg]:h-auto [&_svg]:max-w-full"
+        />
       </div>
       {viewMode === "edit" && (
         <div className="flex-1 min-h-0 flex flex-col">
-          <div className="flex-1 min-w-0 overflow-auto bg-[#d9d1c2]/40 p-5">
+          <div ref={editScrollRef} className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden bg-[#d9d1c2]/40 p-5">
             <svg
+              ref={editSvgRef}
               width={svgWidth}
               height={svgHeight}
               viewBox={`0 0 ${svgWidth} ${svgHeight}`}
-              className="block min-h-full rounded-xl bg-[#fffdf7] shadow-[0_22px_70px_rgba(65,52,33,0.20)]"
+              className="block h-auto min-h-full w-full rounded-xl bg-[#fffdf7] shadow-[0_22px_70px_rgba(65,52,33,0.20)]"
               style={{ cursor: editMode === "note-input" ? "crosshair" : "default" }}
               role="img"
               aria-label="可编辑五线谱"
@@ -799,15 +883,21 @@ export function ScoreViewer({
                   </g>
                 );
               })}
-              {activePoint && (
+              {rangeStartPoint && (
+                <RangeMarker point={rangeStartPoint} label="起" color="#0f766e" />
+              )}
+              {rangeEndPoint && (
+                <RangeMarker point={rangeEndPoint} label="终" color="#be123c" />
+              )}
+              {playbackCursorPoint && (
                 <line
-                  x1={activePoint.x}
-                  x2={activePoint.x}
-                  y1={activePoint.staffTop - 18}
-                  y2={activePoint.staffBottom + 58}
+                  x1={playbackCursorPoint.x}
+                  x2={playbackCursorPoint.x}
+                  y1={playbackCursorPoint.staffTop - 28}
+                  y2={playbackCursorPoint.staffBottom + 78}
                   stroke="#0f766e"
-                  strokeWidth="2"
-                  strokeDasharray="4 4"
+                  strokeWidth="3"
+                  strokeLinecap="round"
                 />
               )}
 
@@ -858,8 +948,7 @@ export function ScoreViewer({
                     />
                     {activeNote && (
                       <g>
-                        <circle cx={point.x} cy={point.y} r="25" fill="#ccfbf1" stroke="#0f766e" strokeWidth="2" opacity="0.82" />
-                        <line x1={point.x} x2={point.x} y1={point.staffTop - 34} y2={point.staffBottom + 74} stroke="#0f766e" strokeWidth="2.4" />
+                        <circle cx={point.x} cy={point.y} r="25" fill="#ccfbf1" stroke="#0f766e" strokeWidth="2" opacity="0.58" />
                       </g>
                     )}
                     {ledgerLines(group, point).map((lineY) => (
@@ -1049,6 +1138,36 @@ export function ScoreViewer({
           </div>
       )}
     </div>
+  );
+}
+
+function RangeMarker({ point, label, color }: { point: ScorePoint; label: string; color: string }) {
+  return (
+    <g pointerEvents="none">
+      <line
+        x1={point.x}
+        x2={point.x}
+        y1={point.staffTop - 54}
+        y2={point.staffBottom + 86}
+        stroke={color}
+        strokeWidth="2"
+        strokeDasharray="7 5"
+        strokeLinecap="round"
+      />
+      <path
+        d={`M ${point.x} ${point.staffTop - 54} L ${point.x + 28} ${point.staffTop - 42} L ${point.x} ${point.staffTop - 30} Z`}
+        fill={color}
+      />
+      <text
+        x={point.x + 8}
+        y={point.staffTop - 39}
+        fontSize="12"
+        fontWeight="700"
+        fill="#ffffff"
+      >
+        {label}
+      </text>
+    </g>
   );
 }
 
@@ -1302,6 +1421,79 @@ function notePoint(group: NoteGroup, measures: number[]) {
   };
 }
 
+function cursorPointForTime(
+  time: number,
+  groups: NoteGroup[],
+  measures: number[],
+  edge: "start" | "end" = "start",
+): ScorePoint | null {
+  if (!groups.length) return null;
+  const sorted = sortGroups(groups);
+  const safeTime = Number.isFinite(time) ? time : sorted[0].start;
+  let group = sorted.find((item) => safeTime >= item.start && safeTime < item.end);
+  let localTime = safeTime;
+
+  if (!group && edge === "end") {
+    group = [...sorted].reverse().find((item) => safeTime >= item.end) ?? sorted[sorted.length - 1];
+    localTime = group.end;
+  } else if (!group) {
+    group = sorted.find((item) => safeTime <= item.start) ?? sorted[sorted.length - 1];
+    localTime = group.start;
+  }
+
+  const point = notePoint(group, measures);
+  const duration = Math.max(0.001, noteDuration(group));
+  const durationWidth = Math.max(18, (duration / (BEATS_PER_MEASURE * BEAT_SECONDS)) * (MEASURE_WIDTH - 82));
+  const ratio = Math.max(0, Math.min(1, (localTime - group.start) / duration));
+  return {
+    ...point,
+    x: Math.min(point.measureRight - 10, point.x + durationWidth * ratio),
+  };
+}
+
+function normalizeCompareRange(
+  range: [number, number] | undefined,
+  groups: NoteGroup[],
+  pivot: "start" | "end" = "start",
+): [number, number] {
+  if (!groups.length) return [0, 0];
+  const sorted = sortGroups(groups);
+  const first = sorted[0];
+  const last = sorted[sorted.length - 1];
+  let start = Number(range?.[0] ?? first.start);
+  let end = Number(range?.[1] ?? last.end);
+
+  start = Math.max(first.start, Math.min(start, last.end));
+  end = Math.max(first.start, Math.min(end, last.end));
+
+  if (end <= start && pivot === "start") {
+    const nextGroup = sorted.find((group) => group.end > start) ?? last;
+    end = Math.max(nextGroup.end, start + 0.1);
+  } else if (end <= start) {
+    const previousGroup = [...sorted].reverse().find((group) => group.start < end) ?? first;
+    start = Math.min(previousGroup.start, end - 0.1);
+  }
+
+  start = Math.max(first.start, Math.min(start, last.end));
+  end = Math.max(first.start, Math.min(end, last.end));
+  if (end <= start) end = Math.min(last.end, start + 0.1);
+
+  return [roundTime(start), roundTime(end)];
+}
+
+function formatRangeLabel(range: [number, number], groups: NoteGroup[]): string {
+  if (!groups.length) return "未选择对比范围";
+  return `对比 ${positionLabelForTime(range[0], groups, "start")} - ${positionLabelForTime(range[1], groups, "end")}`;
+}
+
+function positionLabelForTime(time: number, groups: NoteGroup[], edge: "start" | "end") {
+  const sorted = sortGroups(groups);
+  const group = edge === "end"
+    ? [...sorted].reverse().find((item) => time >= item.end || time > item.start) ?? sorted[sorted.length - 1]
+    : sorted.find((item) => time <= item.end) ?? sorted[0];
+  return `第 ${group.measure} 小节 ${formatBeat(group.beat)} 拍`;
+}
+
 function systemTop(systemIndex: number) {
   return STAFF_TOP + systemIndex * SYSTEM_HEIGHT;
 }
@@ -1360,6 +1552,14 @@ function sortGroups(groups: NoteGroup[]) {
 
 function clampBeat(beat: number): number {
   return Math.max(1, Math.min(4.958, Math.round((Number(beat) || 1) * 24) / 24));
+}
+
+function formatBeat(beat: number): string {
+  return Number.isInteger(beat) ? String(beat) : beat.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function roundTime(value: number): number {
+  return Number(value.toFixed(3));
 }
 
 function startForPosition(measure: number, beat: number): number {

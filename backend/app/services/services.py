@@ -159,3 +159,6 @@ class PerformanceService:
             select(NoteResult).where(NoteResult.performance_id == performance_id).order_by(NoteResult.measure, NoteResult.beat)
         )
         return list(result.scalars().all())
+
+    async def clear_results(self, performance_id: str) -> None:
+        await self.session.execute(delete(NoteResult).where(NoteResult.performance_id == performance_id))

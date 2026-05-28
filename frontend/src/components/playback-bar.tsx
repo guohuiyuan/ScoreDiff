@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Button } from "@/components/ui/button";
-import { Slider } from "@/components/ui/slider";
+import { Pause, Play, Repeat2, Square } from "lucide-react";
 import { type PlaybackTimeline } from "@/lib/api";
 
 interface PlaybackBarProps {
@@ -10,6 +10,7 @@ interface PlaybackBarProps {
   instrument?: string;
   seekRequest?: { time: number; version: number };
   onTimeUpdate?: (time: number) => void;
+  compareRange?: [number, number];
 }
 
 type InstrumentProfile = {
@@ -21,7 +22,13 @@ type InstrumentProfile = {
   sustain: number;
 };
 
-export function PlaybackBar({ timeline, instrument = "violin", seekRequest, onTimeUpdate }: PlaybackBarProps) {
+export function PlaybackBar({
+  timeline,
+  instrument = "violin",
+  seekRequest,
+  onTimeUpdate,
+  compareRange,
+}: PlaybackBarProps) {
   const initialBpm = Math.round(Math.max(1, timeline?.bpm ?? 120));
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -34,9 +41,13 @@ export function PlaybackBar({ timeline, instrument = "violin", seekRequest, onTi
   const lastSeekVersionRef = useRef(0);
   const audioRef = useRef<AudioContext | null>(null);
   const scheduledRef = useRef<OscillatorNode[]>([]);
+  const scheduleAudioRef = useRef<(fromTime: number, playbackRate?: number, untilTime?: number) => Promise<void>>(async () => {});
 
   const totalDuration = timeline?.total_duration ?? 0;
   const baseBpm = Math.max(1, timeline?.bpm ?? 120);
+  const selectedRange = normalizeRange(compareRange ?? [0, totalDuration], totalDuration);
+  const selectedStart = selectedRange[0];
+  const selectedEnd = selectedRange[1];
 
   const getAudioContext = useCallback(() => {
     if (!audioRef.current) {
@@ -63,7 +74,11 @@ export function PlaybackBar({ timeline, instrument = "violin", seekRequest, onTi
     scheduledRef.current = [];
   }, []);
 
-  const scheduleAudio = useCallback(async (fromTime: number, playbackRate: number = rateRef.current) => {
+  const scheduleAudio = useCallback(async (
+    fromTime: number,
+    playbackRate: number = rateRef.current,
+    untilTime: number = totalDuration,
+  ) => {
     if (!timeline) return;
     const context = getAudioContext();
     if (context.state === "suspended") {
@@ -72,11 +87,13 @@ export function PlaybackBar({ timeline, instrument = "violin", seekRequest, onTi
 
     stopScheduledAudio();
     const rate = Math.max(0.25, playbackRate);
+    const playUntil = Math.max(fromTime, Math.min(totalDuration, untilTime));
     const startAt = context.currentTime + 0.03;
 
     for (const event of timeline.events) {
       if (event.type === "rest" || event.pitches.length === 0) continue;
-      const eventEnd = event.time + event.duration;
+      if (event.time >= playUntil) continue;
+      const eventEnd = Math.min(event.time + event.duration, playUntil);
       if (eventEnd <= fromTime) continue;
 
       const noteStart = startAt + Math.max(0, event.time - fromTime) / rate;
@@ -101,7 +118,11 @@ export function PlaybackBar({ timeline, instrument = "violin", seekRequest, onTi
         scheduledRef.current.push(oscillator);
       }
     }
-  }, [getAudioContext, instrument, stopScheduledAudio, timeline]);
+  }, [getAudioContext, instrument, stopScheduledAudio, timeline, totalDuration]);
+
+  useEffect(() => {
+    scheduleAudioRef.current = scheduleAudio;
+  }, [scheduleAudio]);
 
   useEffect(() => {
     rateRef.current = bpm / baseBpm;
@@ -109,13 +130,18 @@ export function PlaybackBar({ timeline, instrument = "violin", seekRequest, onTi
 
   useEffect(() => {
     if (!playing) return;
+    const playStart = selectedEnd > selectedStart ? selectedStart : 0;
+    const stopAt = selectedEnd > selectedStart ? selectedEnd : totalDuration;
 
     const tick = () => {
       const elapsed = ((performance.now() - startRef.current) / 1000) * rateRef.current + offsetRef.current;
-      if (elapsed >= totalDuration) {
-        setCurrentTime(totalDuration);
-        setPlaying(false);
-        onTimeUpdate?.(totalDuration);
+      if (elapsed >= stopAt) {
+        setCurrentTime(playStart);
+        offsetRef.current = playStart;
+        startRef.current = performance.now();
+        onTimeUpdate?.(playStart);
+        void scheduleAudioRef.current(playStart, rateRef.current, stopAt);
+        animRef.current = requestAnimationFrame(tick);
         return;
       }
       setCurrentTime(elapsed);
@@ -129,7 +155,7 @@ export function PlaybackBar({ timeline, instrument = "violin", seekRequest, onTi
       animRef.current = null;
       stopScheduledAudio();
     };
-  }, [playing, totalDuration, onTimeUpdate, stopScheduledAudio]);
+  }, [playing, totalDuration, selectedStart, selectedEnd, onTimeUpdate, stopScheduledAudio]);
 
   async function handlePlayPause() {
     if (!timeline) return;
@@ -139,36 +165,23 @@ export function PlaybackBar({ timeline, instrument = "violin", seekRequest, onTi
       return;
     }
 
-    const nextTime = currentTime >= totalDuration ? 0 : currentTime;
+    const playStart = selectedEnd > selectedStart ? selectedStart : 0;
+    const playEnd = selectedEnd > selectedStart ? selectedEnd : totalDuration;
+    const nextTime = currentTime < playStart || currentTime >= playEnd ? playStart : currentTime;
     setCurrentTime(nextTime);
     offsetRef.current = nextTime;
     startRef.current = performance.now();
-    await scheduleAudio(nextTime);
+    await scheduleAudio(nextTime, rateRef.current, playEnd);
     setPlaying(true);
   }
 
   function handleStop() {
+    const resetTime = selectedEnd > selectedStart ? selectedStart : 0;
     setPlaying(false);
     stopScheduledAudio();
-    setCurrentTime(0);
-    offsetRef.current = 0;
-    onTimeUpdate?.(0);
-  }
-
-  function handleSeek(value: number | readonly number[]) {
-    const t = Array.isArray(value) ? value[0] : value;
-    seekTo(t);
-  }
-
-  function seekTo(time: number) {
-    const t = Math.max(0, Math.min(totalDuration, Number(time) || 0));
-    setCurrentTime(t);
-    offsetRef.current = t;
-    startRef.current = performance.now();
-    if (playing) {
-      void scheduleAudio(t);
-    }
-    onTimeUpdate?.(t);
+    setCurrentTime(resetTime);
+    offsetRef.current = resetTime;
+    onTimeUpdate?.(resetTime);
   }
 
   useEffect(() => {
@@ -179,10 +192,10 @@ export function PlaybackBar({ timeline, instrument = "violin", seekRequest, onTi
     offsetRef.current = t;
     startRef.current = performance.now();
     if (playing) {
-      void scheduleAudio(t);
+      void scheduleAudio(t, rateRef.current, selectedEnd);
     }
     onTimeUpdate?.(t);
-  }, [seekRequest, totalDuration, playing, onTimeUpdate, scheduleAudio]);
+  }, [seekRequest, totalDuration, playing, selectedEnd, onTimeUpdate, scheduleAudio]);
 
   function applyBpm(value: number) {
     const nextBpm = Math.max(40, Math.min(240, Math.round(value)));
@@ -193,7 +206,7 @@ export function PlaybackBar({ timeline, instrument = "violin", seekRequest, onTi
     offsetRef.current = currentTime;
     startRef.current = performance.now();
     if (playing) {
-      void scheduleAudio(currentTime, nextRate);
+      void scheduleAudio(currentTime, nextRate, selectedEnd);
     }
   }
 
@@ -215,62 +228,60 @@ export function PlaybackBar({ timeline, instrument = "violin", seekRequest, onTi
     }
   }
 
-  function formatTime(seconds: number): string {
-    const m = Math.floor(seconds / 60);
-    const s = Math.floor(seconds % 60);
-    return `${m}:${s.toString().padStart(2, "0")}`;
-  }
-
   if (!timeline) {
     return (
-      <div className="h-12 border-t border-border flex items-center justify-center px-4">
+      <div className="h-14 border-t border-border flex items-center justify-center px-4">
         <span className="text-xs text-muted-foreground">加载乐谱后可播放</span>
       </div>
     );
   }
 
   return (
-    <div className="h-12 border-t border-border flex items-center gap-3 px-4">
-      <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={handlePlayPause}>
-        {playing ? "⏸" : "▶"}
-      </Button>
-      <Button variant="ghost" size="sm" className="h-8 w-8 p-0" onClick={handleStop}>
-        ⏹
-      </Button>
-      <span className="text-xs text-muted-foreground w-10 text-right tabular-nums">
-        {formatTime(currentTime)}
-      </span>
-      <Slider
-        className="flex-1"
-        min={0}
-        max={totalDuration}
-        step={0.1}
-        value={[currentTime]}
-        onValueChange={handleSeek}
-      />
-      <span className="text-xs text-muted-foreground w-10 tabular-nums">
-        {formatTime(totalDuration)}
-      </span>
-      <span className="text-xs text-muted-foreground">
-        原始 {baseBpm}
-      </span>
-      <label className="flex items-center gap-1 text-xs text-muted-foreground">
-        BPM
-        <input
-          className="h-8 w-16 rounded-md border border-input bg-background px-2 text-xs text-foreground"
-          type="number"
-          min={40}
-          max={240}
-          step={1}
-          value={bpmText}
-          onChange={(event) => setBpmText(event.target.value)}
-          onBlur={commitBpmText}
-          onKeyDown={handleBpmKeyDown}
-        />
-      </label>
-      <span className="text-xs text-muted-foreground">
-        {instrumentProfile(instrument).label}
-      </span>
+    <div className="border-t border-border px-4 py-2">
+      <div className="flex flex-wrap items-center gap-3">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-8 w-8 p-0"
+          onClick={handlePlayPause}
+          aria-label={playing ? "暂停" : "播放"}
+        >
+          {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-8 w-8 p-0"
+          onClick={handleStop}
+          aria-label="停止"
+        >
+          <Square className="h-3.5 w-3.5" />
+        </Button>
+        <span className="inline-flex items-center gap-1 rounded-full border border-teal-200 bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-800">
+          <Repeat2 className="h-3.5 w-3.5" />
+          循环所选片段
+        </span>
+        <span className="text-xs text-muted-foreground">
+          原始 {baseBpm}
+        </span>
+        <label className="flex items-center gap-1 text-xs text-muted-foreground">
+          BPM
+          <input
+            className="h-8 w-16 rounded-md border border-input bg-background px-2 text-xs text-foreground"
+            type="number"
+            min={40}
+            max={240}
+            step={1}
+            value={bpmText}
+            onChange={(event) => setBpmText(event.target.value)}
+            onBlur={commitBpmText}
+            onKeyDown={handleBpmKeyDown}
+          />
+        </label>
+        <span className="text-xs text-muted-foreground">
+          {instrumentProfile(instrument).label}
+        </span>
+      </div>
     </div>
   );
 }
@@ -289,4 +300,23 @@ function instrumentProfile(instrument: string): InstrumentProfile {
     clarinet: { label: "单簧管", waveform: "square", gain: 0.08, attack: 0.03, release: 0.08, sustain: 0.06 },
   };
   return profiles[instrument] ?? profiles.violin;
+}
+
+function normalizeRange(range: [number, number], totalDuration: number): [number, number] {
+  const duration = Math.max(0, totalDuration);
+  if (duration <= 0) return [0, 0];
+
+  const lower = Math.max(0, Math.min(range[0], range[1], duration));
+  const upper = Math.max(0, Math.min(Math.max(range[0], range[1]), duration));
+  const minSpan = Math.min(0.1, duration);
+  if (upper - lower >= minSpan) {
+    return [roundTime(lower), roundTime(upper)];
+  }
+
+  const start = Math.min(Math.max(0, lower), Math.max(0, duration - minSpan));
+  return [roundTime(start), roundTime(start + minSpan)];
+}
+
+function roundTime(value: number): number {
+  return Number(value.toFixed(3));
 }

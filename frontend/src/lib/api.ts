@@ -37,6 +37,30 @@ export interface DiffIssue {
   color: string;
 }
 
+export interface CompareSegment {
+  start: number;
+  end: number;
+  duration: number;
+  note_count: number;
+}
+
+export interface PitchChartPoint {
+  time: number;
+  midi: number;
+  name?: string;
+  confidence?: number | null;
+}
+
+export interface PitchComparisonChart {
+  segment: CompareSegment;
+  reference: PitchChartPoint[];
+  detected: PitchChartPoint[];
+  pitch_range: {
+    min_midi: number;
+    max_midi: number;
+  };
+}
+
 export interface DiffReport {
   summary: {
     total_score: number;
@@ -49,6 +73,8 @@ export interface DiffReport {
   measure_scores: Record<string, number>;
   weak_measures: number[];
   color_map: Record<string, string>;
+  segment?: CompareSegment;
+  pitch_chart?: PitchComparisonChart;
 }
 
 export async function fetchProjects(): Promise<Project[]> {
@@ -142,8 +168,21 @@ export async function uploadPerformance(projectId: string, file: File): Promise<
   return res.json();
 }
 
-export async function analyzePerformance(performanceId: string): Promise<{ status: string; total_score: number }> {
-  const res = await fetch(`${API_BASE}/api/performances/${performanceId}/analyze`, { method: "POST" });
+function segmentQuery(segment?: Partial<Pick<CompareSegment, "start" | "end">>, mode?: "mock" | "real"): string {
+  const params = new URLSearchParams();
+  if (mode) params.set("mode", mode);
+  if (segment?.start !== undefined) params.set("segment_start", String(segment.start));
+  if (segment?.end !== undefined) params.set("segment_end", String(segment.end));
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
+export async function analyzePerformance(
+  performanceId: string,
+  segment?: Partial<Pick<CompareSegment, "start" | "end">>,
+  mode: "mock" | "real" = "mock",
+): Promise<{ status: string; total_score: number; segment?: CompareSegment }> {
+  const res = await fetch(`${API_BASE}/api/performances/${performanceId}/analyze${segmentQuery(segment, mode)}`, { method: "POST" });
   if (!res.ok) throw new Error(await readError(res, "分析演奏失败"));
   return res.json();
 }
@@ -188,8 +227,12 @@ export interface TaskProgress {
   message: string;
 }
 
-export async function analyzePerformanceAsync(performanceId: string): Promise<{ task_id: string; status: string }> {
-  const res = await fetch(`${API_BASE}/api/performances/${performanceId}/analyze-async`, { method: "POST" });
+export async function analyzePerformanceAsync(
+  performanceId: string,
+  segment?: Partial<Pick<CompareSegment, "start" | "end">>,
+  mode: "mock" | "real" = "mock",
+): Promise<{ task_id: string; status: string }> {
+  const res = await fetch(`${API_BASE}/api/performances/${performanceId}/analyze-async${segmentQuery(segment, mode)}`, { method: "POST" });
   if (!res.ok) throw new Error(await readError(res, "启动分析失败"));
   return res.json();
 }

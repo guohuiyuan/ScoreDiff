@@ -183,3 +183,83 @@ def analyze_performance_pitch(
         })
 
     return results
+
+
+def build_pitch_comparison_chart(
+    audio_path: Union[str, Path],
+    note_groups: list[dict],
+    segment_start: float,
+    segment_end: float,
+    max_points: int = 500,
+) -> dict:
+    """Build coarse reference/performance pitch curves for a selected segment."""
+    duration = max(0.0, float(segment_end) - float(segment_start))
+    reference = []
+    note_count = 0
+    for ng in note_groups:
+        if ng["type"].split(":")[0] == "rest" or not ng["target_pitches"]:
+            continue
+        note_count += 1
+        start = max(0.0, float(ng["start"]) - segment_start)
+        end = max(start, float(ng["end"]) - segment_start)
+        pitch_value = float(ng["target_pitches"][0])
+        pitch_name = ng["target_names"][0] if ng["target_names"] else ""
+        reference.append({
+            "time": round(start, 3),
+            "midi": pitch_value,
+            "name": pitch_name,
+        })
+        reference.append({
+            "time": round(min(duration, end), 3),
+            "midi": pitch_value,
+            "name": pitch_name,
+        })
+
+    detected = []
+    try:
+        pitch_data = detect_pitch_pyin(str(audio_path))
+        times = pitch_data["times"]
+        freqs = pitch_data["frequencies"]
+        voiced = pitch_data["voiced_flag"]
+        confidence = pitch_data["confidence"]
+        sample_step = max(1, int(len(times) / max_points))
+
+        for idx in range(0, len(times), sample_step):
+            time = float(times[idx])
+            if time > duration:
+                break
+            if not voiced[idx] or np.isnan(freqs[idx]):
+                continue
+            midi = hz_to_midi(float(freqs[idx]))
+            if np.isnan(midi):
+                continue
+            detected.append({
+                "time": round(time, 3),
+                "midi": round(float(midi), 2),
+                "confidence": round(float(confidence[idx]), 3) if confidence is not None else None,
+            })
+    except Exception:
+        detected = []
+
+    midi_values = [point["midi"] for point in reference] + [point["midi"] for point in detected]
+    if midi_values:
+        min_midi = max(0, min(midi_values) - 2)
+        max_midi = min(127, max(midi_values) + 2)
+    else:
+        min_midi = 55
+        max_midi = 85
+
+    return {
+        "segment": {
+            "start": round(float(segment_start), 3),
+            "end": round(float(segment_end), 3),
+            "duration": round(duration, 3),
+            "note_count": note_count,
+        },
+        "reference": reference,
+        "detected": detected,
+        "pitch_range": {
+            "min_midi": round(float(min_midi), 2),
+            "max_midi": round(float(max_midi), 2),
+        },
+    }
