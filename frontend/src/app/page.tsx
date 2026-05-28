@@ -12,9 +12,11 @@ import {
   uploadPerformance,
   analyzePerformanceAsync,
   fetchDiff,
+  fileUrl,
   pollTaskProgress,
   type CompareSegment,
   type DiffReport,
+  type PerformanceUploadResult,
   type PlaybackTimeline,
   type Project,
   type ScoreData,
@@ -42,10 +44,20 @@ export default function Home() {
 
 
   const handleRecordingComplete = useCallback(
-    async (blob: Blob, filename: string, segment: Pick<CompareSegment, "start" | "end">) => {
+    async (
+      blob: Blob,
+      filename: string,
+      segment: Pick<CompareSegment, "start" | "end">,
+      onUploaded?: (result: PerformanceUploadResult) => void,
+    ) => {
       if (!selectedProjectId) return;
       const file = new File([blob], filename, { type: blob.type });
-      const { performance_id } = await uploadPerformance(selectedProjectId, file);
+      const uploadResult = await uploadPerformance(selectedProjectId, file);
+      const { performance_id } = uploadResult;
+      onUploaded?.({
+        ...uploadResult,
+        audio_url: fileUrl(uploadResult.audio_url),
+      });
 
       const { task_id } = await analyzePerformanceAsync(performance_id, segment, "real", playbackBpm);
       setTaskProgress({ task_id, status: "pending", progress: 0, message: "准备分析..." });

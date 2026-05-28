@@ -50,6 +50,9 @@ class PerformanceCreate(BaseModel):
 class PerformanceResponse(BaseModel):
     performance_id: str
     status: str
+    audio_url: Optional[str] = None
+    audio_filename: Optional[str] = None
+    audio_info: Optional[dict] = None
 
 
 class NoteGroupOut(BaseModel):

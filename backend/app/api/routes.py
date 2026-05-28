@@ -3,6 +3,7 @@ import json
 import shutil
 import uuid
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -69,7 +70,7 @@ def _score_paths(project_id: str) -> dict[str, Path]:
 
 def _file_url(path: Path) -> str:
     rel = path.relative_to(settings.data_dir).as_posix()
-    return f"/files/{rel}"
+    return f"/files/{quote(rel, safe='/')}"
 
 
 def _score_urls(project_id: str) -> dict[str, str | None]:
@@ -734,7 +735,13 @@ async def upload_performance(project_id: str, file: UploadFile, session: AsyncSe
 
     perf_svc = PerformanceService(session)
     perf = await perf_svc.create(project_id=project_id, audio_path=str(dest))
-    return PerformanceResponse(performance_id=perf.id, status="uploaded")
+    return PerformanceResponse(
+        performance_id=perf.id,
+        status="uploaded",
+        audio_url=_file_url(dest),
+        audio_filename=dest.name,
+        audio_info=rec_svc.get_audio_info(dest),
+    )
 
 
 @router.get("/projects/{project_id}/recordings")

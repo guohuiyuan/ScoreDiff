@@ -2,8 +2,8 @@
 
 import { useCallback, useRef, useState, type ChangeEvent } from "react";
 import { Button } from "@/components/ui/button";
-import { Mic, Square, Upload } from "lucide-react";
-import { type CompareSegment } from "@/lib/api";
+import { Download, Mic, Square, Upload } from "lucide-react";
+import { type CompareSegment, type PerformanceUploadResult } from "@/lib/api";
 
 interface PracticeRecorderProps {
   projectId: string | null;
@@ -11,13 +11,21 @@ interface PracticeRecorderProps {
   bpm?: number;
   scoreBpm?: number;
   onBpmChange?: (bpm: number) => void;
-  onRecordingComplete?: (blob: Blob, filename: string, segment: Pick<CompareSegment, "start" | "end">) => void;
+  onRecordingComplete?: (
+    blob: Blob,
+    filename: string,
+    segment: Pick<CompareSegment, "start" | "end">,
+    onUploaded?: (result: PerformanceUploadResult) => void,
+  ) => void | Promise<void>;
 }
 
 export function PracticeRecorder({ projectId, compareRange, bpm = 120, scoreBpm = 120, onBpmChange, onRecordingComplete }: PracticeRecorderProps) {
   const [recording, setRecording] = useState(false);
   const [duration, setDuration] = useState(0);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [downloadName, setDownloadName] = useState<string>("processed_recording.wav");
+  const [processedAudioReady, setProcessedAudioReady] = useState(false);
+  const [uploadingAudio, setUploadingAudio] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -27,6 +35,17 @@ export function PracticeRecorder({ projectId, compareRange, bpm = 120, scoreBpm 
   const selectedSegment = normalizeSegment(compareRange);
   const selectedBpm = normalizeBpm(bpm);
   const originalBpm = normalizeBpm(scoreBpm);
+
+  const handleUploadedAudio = useCallback((result: PerformanceUploadResult) => {
+    if (result.audio_url) {
+      setAudioUrl(result.audio_url);
+      setProcessedAudioReady(true);
+    }
+    if (result.audio_filename) {
+      setDownloadName(result.audio_filename);
+    }
+    setUploadingAudio(false);
+  }, []);
 
   const startRecording = useCallback(async () => {
     if (!projectId || selectedSegment.end <= selectedSegment.start) return;
@@ -56,13 +75,21 @@ export function PracticeRecorder({ projectId, compareRange, bpm = 120, scoreBpm 
 
         const ext = mimeType.includes("webm") ? "webm" : "ogg";
         const filename = `recording_${Date.now()}.${ext}`;
-        onRecordingComplete?.(blob, filename, segmentRef.current);
+        setDownloadName(filename.replace(/\.[^.]+$/, "_trimmed.wav"));
+        setProcessedAudioReady(false);
+        setUploadingAudio(true);
+        const uploadTask = onRecordingComplete?.(blob, filename, segmentRef.current, handleUploadedAudio);
+        if (uploadTask) {
+          uploadTask.catch(() => setUploadingAudio(false));
+        }
       };
 
       recorder.start(250);
       startTimeRef.current = Date.now();
       setDuration(0);
       setAudioUrl(null);
+      setProcessedAudioReady(false);
+      setUploadingAudio(false);
       setRecording(true);
 
       timerRef.current = setInterval(() => {
@@ -71,7 +98,7 @@ export function PracticeRecorder({ projectId, compareRange, bpm = 120, scoreBpm 
     } catch {
       alert("无法访问麦克风，请检查浏览器权限设置");
     }
-  }, [projectId, selectedSegment, onRecordingComplete]);
+  }, [projectId, selectedSegment, onRecordingComplete, handleUploadedAudio]);
 
   const stopRecording = useCallback(() => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
@@ -90,10 +117,35 @@ export function PracticeRecorder({ projectId, compareRange, bpm = 120, scoreBpm 
     if (!file) return;
     const url = URL.createObjectURL(file);
     setAudioUrl(url);
+    setDownloadName(file.name || `upload_${Date.now()}`);
+    setProcessedAudioReady(false);
+    setUploadingAudio(true);
     setDuration(0);
-    onRecordingComplete?.(file, file.name || `upload_${Date.now()}`, selectedSegment);
+    const uploadTask = onRecordingComplete?.(file, file.name || `upload_${Date.now()}`, selectedSegment, handleUploadedAudio);
+    if (uploadTask) {
+      uploadTask.catch(() => setUploadingAudio(false));
+    }
     event.target.value = "";
-  }, [projectId, selectedSegment, onRecordingComplete]);
+  }, [projectId, selectedSegment, onRecordingComplete, handleUploadedAudio]);
+
+  const downloadProcessedAudio = useCallback(async () => {
+    if (!audioUrl) return;
+    try {
+      const response = await fetch(audioUrl);
+      if (!response.ok) throw new Error("download failed");
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = downloadName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      alert("下载处理后音频失败");
+    }
+  }, [audioUrl, downloadName]);
 
   function formatDuration(seconds: number): string {
     const m = Math.floor(seconds / 60);
@@ -177,7 +229,25 @@ export function PracticeRecorder({ projectId, compareRange, bpm = 120, scoreBpm 
         </>
       )}
       {audioUrl && !recording && (
-        <audio controls src={audioUrl} className="h-9 w-full" />
+        <div className="rounded-md border border-border bg-background p-2">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <span className="text-xs text-muted-foreground">
+              {processedAudioReady ? "处理后音频" : uploadingAudio ? "原始音频（处理中...）" : "原始音频"}
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="xs"
+              className="gap-1"
+              onClick={downloadProcessedAudio}
+              disabled={!processedAudioReady}
+            >
+              <Download className="h-3 w-3" />
+              下载
+            </Button>
+          </div>
+          <audio controls src={audioUrl} className="h-9 w-full" />
+        </div>
       )}
       {!projectId && (
         <span className="text-xs text-muted-foreground">请先选择项目</span>

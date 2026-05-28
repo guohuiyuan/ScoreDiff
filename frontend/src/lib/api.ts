@@ -86,6 +86,20 @@ export interface DiffReport {
   pitch_chart?: PitchComparisonChart;
 }
 
+export interface PerformanceUploadResult {
+  performance_id: string;
+  status: string;
+  audio_url?: string | null;
+  audio_filename?: string | null;
+  audio_info?: {
+    duration_seconds?: number | null;
+    sample_rate?: number | null;
+    channels?: number | null;
+    format?: string | null;
+    subtype?: string | null;
+  } | null;
+}
+
 export async function fetchProjects(): Promise<Project[]> {
   const res = await fetch(`${API_BASE}/api/projects`);
   if (!res.ok) throw new Error("获取项目列表失败");
@@ -166,7 +180,7 @@ export async function updateScore(projectId: string, noteGroups: NoteGroup[]): P
   return res.json();
 }
 
-export async function uploadPerformance(projectId: string, file: File): Promise<{ performance_id: string; status: string }> {
+export async function uploadPerformance(projectId: string, file: File): Promise<PerformanceUploadResult> {
   const form = new FormData();
   form.append("file", file);
   const res = await fetch(`${API_BASE}/api/projects/${projectId}/performances`, {
