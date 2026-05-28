@@ -11,6 +11,9 @@ interface PlaybackBarProps {
   seekRequest?: { time: number; version: number };
   onTimeUpdate?: (time: number) => void;
   compareRange?: [number, number];
+  bpm?: number;
+  scoreBpm?: number;
+  onBpmChange?: (bpm: number) => void;
 }
 
 type InstrumentProfile = {
@@ -28,12 +31,13 @@ export function PlaybackBar({
   seekRequest,
   onTimeUpdate,
   compareRange,
+  bpm: controlledBpm,
+  scoreBpm,
+  onBpmChange,
 }: PlaybackBarProps) {
-  const initialBpm = Math.round(Math.max(1, timeline?.bpm ?? 120));
+  const bpm = normalizeBpm(controlledBpm ?? scoreBpm ?? timeline?.bpm ?? 120);
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
-  const [bpm, setBpm] = useState(initialBpm);
-  const [bpmText, setBpmText] = useState(String(initialBpm));
   const animRef = useRef<number | null>(null);
   const startRef = useRef<number>(0);
   const offsetRef = useRef<number>(0);
@@ -45,6 +49,7 @@ export function PlaybackBar({
 
   const totalDuration = timeline?.total_duration ?? 0;
   const baseBpm = Math.max(1, timeline?.bpm ?? 120);
+  const scoreTempo = normalizeBpm(scoreBpm ?? baseBpm);
   const selectedRange = normalizeRange(compareRange ?? [0, totalDuration], totalDuration);
   const selectedStart = selectedRange[0];
   const selectedEnd = selectedRange[1];
@@ -201,8 +206,7 @@ export function PlaybackBar({
     const nextBpm = Math.max(40, Math.min(240, Math.round(value)));
     const nextRate = nextBpm / baseBpm;
     rateRef.current = nextRate;
-    setBpm(nextBpm);
-    setBpmText(String(nextBpm));
+    onBpmChange?.(nextBpm);
     offsetRef.current = currentTime;
     startRef.current = performance.now();
     if (playing) {
@@ -210,12 +214,9 @@ export function PlaybackBar({
     }
   }
 
-  function commitBpmText() {
-    const nextBpm = Number(bpmText);
-    if (!bpmText.trim() || !Number.isFinite(nextBpm)) {
-      setBpmText(String(bpm));
-      return;
-    }
+  function commitBpmText(value: string) {
+    const nextBpm = Number(value);
+    if (!value.trim() || !Number.isFinite(nextBpm)) return;
     applyBpm(nextBpm);
   }
 
@@ -223,7 +224,7 @@ export function PlaybackBar({
     if (event.key === "Enter") {
       event.currentTarget.blur();
     } else if (event.key === "Escape") {
-      setBpmText(String(bpm));
+      event.currentTarget.value = String(bpm);
       event.currentTarget.blur();
     }
   }
@@ -262,19 +263,19 @@ export function PlaybackBar({
           循环所选片段
         </span>
         <span className="text-xs text-muted-foreground">
-          原始 {baseBpm}
+          谱面 {scoreTempo}
         </span>
         <label className="flex items-center gap-1 text-xs text-muted-foreground">
-          BPM
+          对比速度
           <input
             className="h-8 w-16 rounded-md border border-input bg-background px-2 text-xs text-foreground"
             type="number"
             min={40}
             max={240}
             step={1}
-            value={bpmText}
-            onChange={(event) => setBpmText(event.target.value)}
-            onBlur={commitBpmText}
+            key={bpm}
+            defaultValue={bpm}
+            onBlur={(event) => commitBpmText(event.currentTarget.value)}
             onKeyDown={handleBpmKeyDown}
           />
         </label>
@@ -284,6 +285,11 @@ export function PlaybackBar({
       </div>
     </div>
   );
+}
+
+function normalizeBpm(value: number): number {
+  const bpm = Math.round(Number(value) || 120);
+  return Math.max(40, Math.min(240, bpm));
 }
 
 function midiToFrequency(midi: number): number {

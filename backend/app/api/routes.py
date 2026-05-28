@@ -33,6 +33,7 @@ from app.services.recording_service import RecordingService
 from app.services.score_parser import (
     convert_midi_to_musicxml,
     export_note_groups_to_musicxml,
+    extract_musicxml_metadata,
     generate_midi_from_musicxml,
     normalize_note_group,
     parse_midi_to_note_groups,
@@ -52,6 +53,7 @@ router = APIRouter(prefix="/api")
 
 ALLOWED_SCORE_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".musicxml", ".xml", ".mid", ".midi"}
 ALLOWED_INSTRUMENTS = {"violin", "piano", "flute", "guitar", "cello", "clarinet"}
+BASE_SCORE_BPM = 120.0
 
 
 def _score_paths(project_id: str) -> dict[str, Path]:
@@ -70,6 +72,10 @@ def _file_url(path: Path) -> str:
 def _score_urls(project_id: str) -> dict[str, str | None]:
     paths = _score_paths(project_id)
     return {key: _file_url(path) if path.exists() else None for key, path in paths.items()}
+
+
+def _score_metadata(project_id: str) -> dict:
+    return extract_musicxml_metadata(_score_paths(project_id)["musicxml"])
 
 
 def _delete_project_files(project_id: str) -> None:
@@ -171,6 +177,34 @@ def _segment_note_groups(
         "duration": round(end - start, 4),
         "note_count": len([g for g in selected if g.get("type", "").split(":")[0] != "rest"]),
     }
+
+
+def _time_scale_for_bpm(bpm: float | None) -> float:
+    safe_bpm = min(240.0, max(40.0, float(bpm or BASE_SCORE_BPM)))
+    return BASE_SCORE_BPM / safe_bpm
+
+
+def _scale_note_group_times(note_groups: list[dict], scale: float) -> list[dict]:
+    scaled: list[dict] = []
+    for group in note_groups:
+        next_group = dict(group)
+        next_group["start"] = round(float(group.get("start") or 0.0) * scale, 4)
+        next_group["end"] = round(float(group.get("end") or 0.0) * scale, 4)
+        scaled.append(next_group)
+    return scaled
+
+
+def _analysis_note_groups(
+    note_groups: list[dict],
+    segment_start: float | None = None,
+    segment_end: float | None = None,
+    bpm: float | None = None,
+) -> tuple[list[dict], dict]:
+    selected, segment = _segment_note_groups(note_groups, segment_start, segment_end)
+    scale = _time_scale_for_bpm(bpm)
+    segment["duration"] = round(segment["duration"] * scale, 4)
+    segment["bpm"] = round(BASE_SCORE_BPM / scale, 3)
+    return _scale_note_group_times(selected, scale), segment
 
 
 def _selected_original_groups(note_groups: list[dict], result_ids: set[str]) -> list[dict]:
@@ -360,6 +394,7 @@ async def get_score(project_id: str, session: AsyncSession = Depends(get_session
         musicxml_url=urls["musicxml"],
         midi_url=urls["midi"],
         mp3_url=urls["mp3"],
+        metadata=_score_metadata(project_id),
         note_groups=[NoteGroupOut(**g) for g in groups],
     )
 
@@ -399,6 +434,7 @@ async def update_score(project_id: str, body: ScoreUpdateRequest, session: Async
         musicxml_url=urls["musicxml"],
         midi_url=urls["midi"],
         mp3_url=urls["mp3"],
+        metadata=_score_metadata(project_id),
         note_groups=[NoteGroupOut(**g) for g in groups],
     )
 
@@ -649,6 +685,7 @@ async def analyze_performance(
     mode: str = Query("mock", pattern="^(mock|real)$"),
     segment_start: float | None = Query(None, ge=0),
     segment_end: float | None = Query(None, ge=0),
+    bpm: float = Query(BASE_SCORE_BPM, ge=40, le=240),
     session: AsyncSession = Depends(get_session),
 ):
     """Run scoring analysis on a performance. mode='mock' or 'real'."""
@@ -662,7 +699,7 @@ async def analyze_performance(
     if not note_groups:
         raise HTTPException(status_code=400, detail="当前项目没有可分析的乐谱音符")
 
-    selected_groups, segment = _segment_note_groups(note_groups, segment_start, segment_end)
+    selected_groups, segment = _analysis_note_groups(note_groups, segment_start, segment_end, bpm)
 
     if mode == "real":
         scoring = generate_real_scoring(perf.audio_path, selected_groups, performance_id)
@@ -682,6 +719,7 @@ async def analyze_performance_async(
     mode: str = Query("mock", pattern="^(mock|real)$"),
     segment_start: float | None = Query(None, ge=0),
     segment_end: float | None = Query(None, ge=0),
+    bpm: float = Query(BASE_SCORE_BPM, ge=40, le=240),
     session: AsyncSession = Depends(get_session),
 ):
     """Start async analysis — returns a task_id for progress polling."""
@@ -693,7 +731,7 @@ async def analyze_performance_async(
     task_svc = TaskService(session)
     task = await task_svc.create(task_type="analyze", project_id=perf.project_id)
 
-    background_tasks.add_task(_run_analysis_task, task.id, performance_id, perf.project_id, mode, segment_start, segment_end)
+    background_tasks.add_task(_run_analysis_task, task.id, performance_id, perf.project_id, mode, segment_start, segment_end, bpm)
 
     return {"task_id": task.id, "status": "pending"}
 
@@ -705,6 +743,7 @@ async def _run_analysis_task(
     mode: str = "mock",
     segment_start: float | None = None,
     segment_end: float | None = None,
+    bpm: float | None = None,
 ):
     """Background task that simulates progress updates via redis."""
     from app.db.session import async_session_factory
@@ -735,7 +774,7 @@ async def _run_analysis_task(
             return
 
         try:
-            selected_groups, segment = _segment_note_groups(note_groups, segment_start, segment_end)
+            selected_groups, segment = _analysis_note_groups(note_groups, segment_start, segment_end, bpm)
             if mode == "real":
                 scoring = generate_real_scoring(perf.audio_path, selected_groups, performance_id)
             else:
@@ -798,6 +837,18 @@ async def get_performance_diff(performance_id: str, session: AsyncSession = Depe
         "note_count": int(perf.segment_note_count or 0),
     } if perf.segment_start is not None and perf.segment_end is not None else _infer_segment_from_groups(selected_groups)
 
+    chart_groups = selected_groups
+    chart_start = segment["start"]
+    chart_end = segment["end"]
+    if perf.segment_start is not None and perf.segment_end is not None:
+        clipped_groups, original_segment = _segment_note_groups(note_groups, perf.segment_start, perf.segment_end)
+        original_duration = max(0.001, float(original_segment["duration"]))
+        chart_scale = max(0.001, float(segment["duration"])) / original_duration
+        segment["bpm"] = round(BASE_SCORE_BPM / chart_scale, 3)
+        chart_groups = _scale_note_group_times(clipped_groups, chart_scale)
+        chart_start = 0.0
+        chart_end = float(segment["duration"])
+
     scoring_result = {
         "total_score": perf.total_score,
         "pitch_score": perf.pitch_score,
@@ -822,8 +873,8 @@ async def get_performance_diff(performance_id: str, session: AsyncSession = Depe
     diff_report["segment"] = segment
     diff_report["pitch_chart"] = build_pitch_comparison_chart(
         perf.audio_path,
-        selected_groups,
-        segment["start"],
-        segment["end"],
+        chart_groups,
+        chart_start,
+        chart_end,
     )
     return diff_report

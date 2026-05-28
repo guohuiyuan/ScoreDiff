@@ -8,10 +8,13 @@ import { type CompareSegment } from "@/lib/api";
 interface PracticeRecorderProps {
   projectId: string | null;
   compareRange?: [number, number];
+  bpm?: number;
+  scoreBpm?: number;
+  onBpmChange?: (bpm: number) => void;
   onRecordingComplete?: (blob: Blob, filename: string, segment: Pick<CompareSegment, "start" | "end">) => void;
 }
 
-export function PracticeRecorder({ projectId, compareRange, onRecordingComplete }: PracticeRecorderProps) {
+export function PracticeRecorder({ projectId, compareRange, bpm = 120, scoreBpm = 120, onBpmChange, onRecordingComplete }: PracticeRecorderProps) {
   const [recording, setRecording] = useState(false);
   const [duration, setDuration] = useState(0);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
@@ -22,6 +25,8 @@ export function PracticeRecorder({ projectId, compareRange, onRecordingComplete 
   const startTimeRef = useRef<number>(0);
   const segmentRef = useRef<Pick<CompareSegment, "start" | "end">>({ start: 0, end: 0 });
   const selectedSegment = normalizeSegment(compareRange);
+  const selectedBpm = normalizeBpm(bpm);
+  const originalBpm = normalizeBpm(scoreBpm);
 
   const startRecording = useCallback(async () => {
     if (!projectId || selectedSegment.end <= selectedSegment.start) return;
@@ -102,11 +107,34 @@ export function PracticeRecorder({ projectId, compareRange, onRecordingComplete 
         <h2 className="text-sm font-semibold">检测</h2>
         {projectId && selectedSegment.end > selectedSegment.start && (
           <span className="text-xs text-muted-foreground tabular-nums">
-            {formatDuration(selectedSegment.start)} - {formatDuration(selectedSegment.end)}
+            本次只对比 {formatDuration(selectedSegment.start)} - {formatDuration(selectedSegment.end)} / {selectedBpm} BPM
           </span>
         )}
       </div>
       <div className="flex flex-col gap-2">
+      <div className="rounded-md border border-border bg-muted/20 p-2">
+        <div className="mb-1 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+          <span>对比速度</span>
+          <button
+            type="button"
+            className="text-[11px] font-medium text-teal-700 hover:text-teal-900 disabled:opacity-50"
+            onClick={() => onBpmChange?.(originalBpm)}
+            disabled={!onBpmChange}
+          >
+            用谱面 {originalBpm} BPM
+          </button>
+        </div>
+        <input
+          className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+          type="number"
+          min={40}
+          max={240}
+          step={1}
+          value={selectedBpm}
+          onChange={(event) => onBpmChange?.(normalizeBpm(Number(event.target.value)))}
+          disabled={!onBpmChange}
+        />
+      </div>
       <input
         ref={fileInputRef}
         type="file"
@@ -159,7 +187,7 @@ export function PracticeRecorder({ projectId, compareRange, onRecordingComplete 
       )}
       {projectId && selectedSegment.end > selectedSegment.start && (
         <span className="min-w-0 text-xs text-muted-foreground">
-          本次只对比 {formatDuration(selectedSegment.start)} - {formatDuration(selectedSegment.end)}
+          本次只对比 {formatDuration(selectedSegment.start)} - {formatDuration(selectedSegment.end)} / {selectedBpm} BPM
         </span>
       )}
       </div>
@@ -174,4 +202,9 @@ function normalizeSegment(range?: [number, number]): Pick<CompareSegment, "start
     start: Number(start.toFixed(3)),
     end: Number(end.toFixed(3)),
   };
+}
+
+function normalizeBpm(value: number): number {
+  const bpm = Math.round(Number(value) || 120);
+  return Math.max(40, Math.min(240, bpm));
 }

@@ -21,11 +21,19 @@ export interface NoteGroup {
   type: string;
 }
 
+export interface ScoreMetadata {
+  key_fifths: number;
+  key_mode: string;
+  time_signature: string;
+  tempo: number;
+}
+
 export interface ScoreData {
   project_id: string;
   musicxml_url: string | null;
   midi_url: string | null;
   mp3_url: string | null;
+  metadata?: ScoreMetadata;
   note_groups: NoteGroup[];
 }
 
@@ -42,6 +50,7 @@ export interface CompareSegment {
   end: number;
   duration: number;
   note_count: number;
+  bpm?: number;
 }
 
 export interface PitchChartPoint {
@@ -168,11 +177,12 @@ export async function uploadPerformance(projectId: string, file: File): Promise<
   return res.json();
 }
 
-function segmentQuery(segment?: Partial<Pick<CompareSegment, "start" | "end">>, mode?: "mock" | "real"): string {
+function segmentQuery(segment?: Partial<Pick<CompareSegment, "start" | "end">>, mode?: "mock" | "real", bpm?: number): string {
   const params = new URLSearchParams();
   if (mode) params.set("mode", mode);
   if (segment?.start !== undefined) params.set("segment_start", String(segment.start));
   if (segment?.end !== undefined) params.set("segment_end", String(segment.end));
+  if (bpm !== undefined && Number.isFinite(bpm)) params.set("bpm", String(Math.round(bpm)));
   const query = params.toString();
   return query ? `?${query}` : "";
 }
@@ -181,8 +191,9 @@ export async function analyzePerformance(
   performanceId: string,
   segment?: Partial<Pick<CompareSegment, "start" | "end">>,
   mode: "mock" | "real" = "mock",
+  bpm?: number,
 ): Promise<{ status: string; total_score: number; segment?: CompareSegment }> {
-  const res = await fetch(`${API_BASE}/api/performances/${performanceId}/analyze${segmentQuery(segment, mode)}`, { method: "POST" });
+  const res = await fetch(`${API_BASE}/api/performances/${performanceId}/analyze${segmentQuery(segment, mode, bpm)}`, { method: "POST" });
   if (!res.ok) throw new Error(await readError(res, "分析演奏失败"));
   return res.json();
 }
@@ -231,8 +242,9 @@ export async function analyzePerformanceAsync(
   performanceId: string,
   segment?: Partial<Pick<CompareSegment, "start" | "end">>,
   mode: "mock" | "real" = "mock",
+  bpm?: number,
 ): Promise<{ task_id: string; status: string }> {
-  const res = await fetch(`${API_BASE}/api/performances/${performanceId}/analyze-async${segmentQuery(segment, mode)}`, { method: "POST" });
+  const res = await fetch(`${API_BASE}/api/performances/${performanceId}/analyze-async${segmentQuery(segment, mode, bpm)}`, { method: "POST" });
   if (!res.ok) throw new Error(await readError(res, "启动分析失败"));
   return res.json();
 }

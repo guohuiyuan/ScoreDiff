@@ -33,10 +33,13 @@ export default function Home() {
   const [taskProgress, setTaskProgress] = useState<TaskProgress | null>(null);
   const [scoreRevision, setScoreRevision] = useState(0);
   const [compareRange, setCompareRange] = useState<[number, number]>([0, 0]);
+  const [playbackBpm, setPlaybackBpm] = useState(120);
   const [projectPanelCollapsed, setProjectPanelCollapsed] = useState(false);
   const [practicePanelCollapsed, setPracticePanelCollapsed] = useState(false);
   const noteGroups = scoreData?.note_groups ?? [];
+  const scoreTempo = normalizeBpm(scoreData?.metadata?.tempo);
   const scoreViewerKey = `${selectedProjectId ?? "none"}:${scoreRevision}`;
+
 
   const handleRecordingComplete = useCallback(
     async (blob: Blob, filename: string, segment: Pick<CompareSegment, "start" | "end">) => {
@@ -44,7 +47,7 @@ export default function Home() {
       const file = new File([blob], filename, { type: blob.type });
       const { performance_id } = await uploadPerformance(selectedProjectId, file);
 
-      const { task_id } = await analyzePerformanceAsync(performance_id, segment, "real");
+      const { task_id } = await analyzePerformanceAsync(performance_id, segment, "real", playbackBpm);
       setTaskProgress({ task_id, status: "pending", progress: 0, message: "准备分析..." });
 
       pollTaskProgress(task_id, async (progress) => {
@@ -59,7 +62,7 @@ export default function Home() {
         }
       });
     },
-    [selectedProjectId],
+    [playbackBpm, selectedProjectId],
   );
 
   const handleTimelineReady = useCallback((nextTimeline: PlaybackTimeline | null) => {
@@ -92,6 +95,7 @@ export default function Home() {
                   setTaskProgress(null);
                   setPlaybackTime(0);
                   setCompareRange([0, 0]);
+                  setPlaybackBpm(normalizeBpm(score?.metadata?.tempo));
                   setSeekRequest((request) => ({ time: 0, version: request.version + 1 }));
                 }}
                 onDiffReady={(report) => {
@@ -120,6 +124,7 @@ export default function Home() {
           onCompareRangeChange={setCompareRange}
           onScoreSaved={(score) => {
             setScoreData(score);
+            setPlaybackBpm(normalizeBpm(score.metadata?.tempo));
             setScoreRevision((revision) => revision + 1);
           }}
         />
@@ -131,6 +136,9 @@ export default function Home() {
           seekRequest={seekRequest}
           onTimeUpdate={setPlaybackTime}
           compareRange={compareRange}
+          bpm={playbackBpm}
+          scoreBpm={scoreTempo}
+          onBpmChange={setPlaybackBpm}
         />
       </main>
       <aside className={`${practicePanelCollapsed ? "w-12" : "w-80"} flex-shrink-0 border-l border-border bg-background flex flex-col transition-[width]`}>
@@ -146,6 +154,9 @@ export default function Home() {
             <PracticeRecorder
               projectId={selectedProjectId}
               compareRange={compareRange}
+              bpm={playbackBpm}
+              scoreBpm={scoreTempo}
+              onBpmChange={setPlaybackBpm}
               onRecordingComplete={handleRecordingComplete}
             />
             <div className="min-h-0 flex-1">
@@ -166,4 +177,9 @@ export default function Home() {
       )}
     </div>
   );
+}
+
+function normalizeBpm(value: number | null | undefined): number {
+  const bpm = Math.round(Number(value) || 120);
+  return Math.max(40, Math.min(240, bpm));
 }

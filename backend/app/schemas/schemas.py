@@ -74,6 +74,13 @@ class NoteGroupIn(BaseModel):
     type: str = "single_note"
 
 
+class ScoreMetadataOut(BaseModel):
+    key_fifths: int = 0
+    key_mode: str = "major"
+    time_signature: str = "4/4"
+    tempo: float = 120.0
+
+
 class ScoreUpdateRequest(BaseModel):
     note_groups: list[NoteGroupIn]
 
@@ -83,6 +90,7 @@ class ScoreResponse(BaseModel):
     musicxml_url: Optional[str]
     midi_url: Optional[str]
     mp3_url: Optional[str] = None
+    metadata: ScoreMetadataOut = ScoreMetadataOut()
     note_groups: list[NoteGroupOut]
 
 
