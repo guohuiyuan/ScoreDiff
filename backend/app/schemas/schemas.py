@@ -55,6 +55,33 @@ class PerformanceResponse(BaseModel):
     audio_info: Optional[dict] = None
 
 
+class PerformanceUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class PerformanceItemResponse(BaseModel):
+    performance_id: str
+    project_id: str
+    title: Optional[str] = None
+    notes: Optional[str] = None
+    status: str
+    audio_url: Optional[str] = None
+    audio_filename: Optional[str] = None
+    audio_info: Optional[dict] = None
+    total_score: Optional[float] = None
+    pitch_score: Optional[float] = None
+    rhythm_score: Optional[float] = None
+    completeness_score: Optional[float] = None
+    stability_score: Optional[float] = None
+    segment_start: Optional[float] = None
+    segment_end: Optional[float] = None
+    segment_duration: Optional[float] = None
+    segment_note_count: Optional[int] = None
+    created_at: str
+    updated_at: Optional[str] = None
+
+
 class NoteGroupOut(BaseModel):
     note_group_id: str
     measure: int

@@ -144,15 +144,43 @@ class PerformanceService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def create(self, project_id: str, audio_path: str) -> Performance:
-        perf = Performance(project_id=project_id, audio_path=audio_path)
+    async def create(self, project_id: str, audio_path: str, title: str | None = None) -> Performance:
+        perf = Performance(project_id=project_id, audio_path=audio_path, title=title)
         self.session.add(perf)
         await self.session.commit()
         await self.session.refresh(perf)
         return perf
 
+    async def list_by_project(self, project_id: str) -> list[Performance]:
+        result = await self.session.execute(
+            select(Performance).where(Performance.project_id == project_id).order_by(Performance.created_at.desc())
+        )
+        return list(result.scalars().all())
+
     async def get(self, performance_id: str) -> Optional[Performance]:
         return await self.session.get(Performance, performance_id)
+
+    async def update(self, performance_id: str, title: str | None = None, notes: str | None = None) -> Optional[Performance]:
+        perf = await self.get(performance_id)
+        if not perf:
+            return None
+        if title is not None:
+            perf.title = title
+        if notes is not None:
+            perf.notes = notes
+        perf.updated_at = datetime.now(timezone.utc).isoformat()
+        await self.session.commit()
+        await self.session.refresh(perf)
+        return perf
+
+    async def delete(self, performance_id: str) -> bool:
+        perf = await self.get(performance_id)
+        if not perf:
+            return False
+        await self.session.execute(delete(NoteResult).where(NoteResult.performance_id == performance_id))
+        await self.session.delete(perf)
+        await self.session.commit()
+        return True
 
     async def get_results(self, performance_id: str) -> list[NoteResult]:
         result = await self.session.execute(

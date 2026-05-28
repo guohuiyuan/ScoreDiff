@@ -6,6 +6,7 @@ import { ScoreViewer } from "@/components/score-viewer";
 import { IssuePanel } from "@/components/issue-panel";
 import { PlaybackBar } from "@/components/playback-bar";
 import { PracticeRecorder } from "@/components/practice-recorder";
+import { PerformanceHistory } from "@/components/performance-history";
 import { DiffViewer } from "@/components/diff-viewer";
 import { TaskProgressBar } from "@/components/task-progress-bar";
 import {
@@ -38,6 +39,8 @@ export default function Home() {
   const [playbackBpm, setPlaybackBpm] = useState(120);
   const [projectPanelCollapsed, setProjectPanelCollapsed] = useState(false);
   const [practicePanelCollapsed, setPracticePanelCollapsed] = useState(false);
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
+  const [selectedPerformanceId, setSelectedPerformanceId] = useState<string | null>(null);
   const noteGroups = scoreData?.note_groups ?? [];
   const scoreTempo = normalizeBpm(scoreData?.metadata?.tempo);
   const scoreViewerKey = `${selectedProjectId ?? "none"}:${scoreRevision}`;
@@ -54,6 +57,8 @@ export default function Home() {
       const file = new File([blob], filename, { type: blob.type });
       const uploadResult = await uploadPerformance(selectedProjectId, file);
       const { performance_id } = uploadResult;
+      setSelectedPerformanceId(performance_id);
+      setHistoryRefreshKey((key) => key + 1);
       onUploaded?.({
         ...uploadResult,
         audio_url: fileUrl(uploadResult.audio_url),
@@ -68,8 +73,10 @@ export default function Home() {
           const diff = await fetchDiff(performance_id);
           setDiffReport(diff);
           setShowDiffViewer(true);
+          setHistoryRefreshKey((key) => key + 1);
           setTimeout(() => setTaskProgress(null), 2000);
         } else if (progress.status === "failed") {
+          setHistoryRefreshKey((key) => key + 1);
           setTimeout(() => setTaskProgress(null), 3000);
         }
       });
@@ -105,6 +112,8 @@ export default function Home() {
                   setDiffReport(null);
                   setShowDiffViewer(false);
                   setTaskProgress(null);
+                  setSelectedPerformanceId(null);
+                  setHistoryRefreshKey((key) => key + 1);
                   setPlaybackTime(0);
                   setCompareRange([0, 0]);
                   setPlaybackBpm(normalizeBpm(score?.metadata?.tempo));
@@ -170,6 +179,24 @@ export default function Home() {
               scoreBpm={scoreTempo}
               onBpmChange={setPlaybackBpm}
               onRecordingComplete={handleRecordingComplete}
+            />
+            <PerformanceHistory
+              projectId={selectedProjectId}
+              refreshKey={historyRefreshKey}
+              selectedPerformanceId={selectedPerformanceId}
+              onSelect={(performance, report) => {
+                setSelectedPerformanceId(performance.performance_id);
+                setDiffReport(report);
+                setShowDiffViewer(true);
+              }}
+              onDeleted={(performanceId) => {
+                if (performanceId === selectedPerformanceId) {
+                  setSelectedPerformanceId(null);
+                  setDiffReport(null);
+                  setShowDiffViewer(false);
+                }
+                setHistoryRefreshKey((key) => key + 1);
+              }}
             />
             <div className="min-h-0 flex-1">
               <IssuePanel

@@ -56,6 +56,8 @@ class Performance(SQLModel, table=True):
     id: str = Field(default_factory=lambda: _new_id("perf_"), primary_key=True)
     project_id: str
     audio_path: str
+    title: Optional[str] = None
+    notes: Optional[str] = None
     status: str = "uploaded"
     segment_start: Optional[float] = None
     segment_end: Optional[float] = None
@@ -67,6 +69,7 @@ class Performance(SQLModel, table=True):
     completeness_score: Optional[float] = None
     stability_score: Optional[float] = None
     created_at: str = Field(default_factory=_utcnow)
+    updated_at: str = Field(default_factory=_utcnow)
 
 
 class NoteResult(SQLModel, table=True):

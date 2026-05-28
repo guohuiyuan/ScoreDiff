@@ -100,6 +100,28 @@ export interface PerformanceUploadResult {
   } | null;
 }
 
+export interface PerformanceItem {
+  performance_id: string;
+  project_id: string;
+  title?: string | null;
+  notes?: string | null;
+  status: string;
+  audio_url?: string | null;
+  audio_filename?: string | null;
+  audio_info?: PerformanceUploadResult["audio_info"];
+  total_score?: number | null;
+  pitch_score?: number | null;
+  rhythm_score?: number | null;
+  completeness_score?: number | null;
+  stability_score?: number | null;
+  segment_start?: number | null;
+  segment_end?: number | null;
+  segment_duration?: number | null;
+  segment_note_count?: number | null;
+  created_at: string;
+  updated_at?: string | null;
+}
+
 export async function fetchProjects(): Promise<Project[]> {
   const res = await fetch(`${API_BASE}/api/projects`);
   if (!res.ok) throw new Error("获取项目列表失败");
@@ -188,6 +210,39 @@ export async function uploadPerformance(projectId: string, file: File): Promise<
     body: form,
   });
   if (!res.ok) throw new Error(await readError(res, "上传录音失败"));
+  return res.json();
+}
+
+export async function fetchPerformances(projectId: string): Promise<PerformanceItem[]> {
+  const res = await fetch(`${API_BASE}/api/projects/${projectId}/performances`);
+  if (!res.ok) throw new Error(await readError(res, "获取录音对比历史失败"));
+  const items: PerformanceItem[] = await res.json();
+  return items.map((item) => ({
+    ...item,
+    audio_url: fileUrl(item.audio_url),
+  }));
+}
+
+export async function updatePerformance(
+  performanceId: string,
+  patch: Partial<Pick<PerformanceItem, "title" | "notes">>,
+): Promise<PerformanceItem> {
+  const res = await fetch(`${API_BASE}/api/performances/${performanceId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error(await readError(res, "更新录音对比记录失败"));
+  const item: PerformanceItem = await res.json();
+  return {
+    ...item,
+    audio_url: fileUrl(item.audio_url),
+  };
+}
+
+export async function deletePerformance(performanceId: string): Promise<{ status: string }> {
+  const res = await fetch(`${API_BASE}/api/performances/${performanceId}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await readError(res, "删除录音对比记录失败"));
   return res.json();
 }
 

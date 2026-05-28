@@ -1,5 +1,6 @@
 """RecordingService: recording upload validation and format management."""
 import shutil
+import uuid
 from pathlib import Path
 from typing import Optional, Union
 
@@ -26,7 +27,8 @@ class RecordingService:
         return suffix in ALLOWED_AUDIO_EXTENSIONS
 
     def save_upload(self, project_id: str, filename: str, file_obj) -> Path:
-        dest = self.recordings_dir / f"{project_id}_{filename}"
+        source_name = Path(filename).name or "recording.wav"
+        dest = self.recordings_dir / f"{project_id}_{uuid.uuid4().hex[:8]}_{source_name}"
         with open(dest, "wb") as f:
             shutil.copyfileobj(file_obj, f)
         return dest

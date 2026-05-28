@@ -2,6 +2,7 @@ import asyncio
 import json
 import shutil
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -15,8 +16,10 @@ from app.models.models import NoteResult as NoteResultModel
 from app.schemas.schemas import (
     NoteGroupOut,
     NoteResultOut,
+    PerformanceItemResponse,
     PerformanceResponse,
     PerformanceResultResponse,
+    PerformanceUpdateRequest,
     ProjectCreate,
     ProjectResponse,
     ProjectUpdate,
@@ -118,6 +121,20 @@ def _delete_project_files(project_id: str) -> None:
                 resolved.unlink(missing_ok=True)
             except OSError:
                 continue
+
+
+def _delete_data_file(path: str | Path) -> None:
+    data_dir = settings.data_dir.resolve()
+    target = Path(path).resolve()
+    try:
+        target.relative_to(data_dir)
+    except ValueError:
+        return
+    if target.exists() and target.is_file():
+        try:
+            target.unlink()
+        except OSError:
+            pass
 
 
 def _latest_score_file(files, file_types: set[str]):
@@ -416,6 +433,33 @@ def _infer_segment_from_groups(groups: list[dict]) -> dict:
     }
 
 
+def _performance_response(perf) -> PerformanceItemResponse:
+    audio_path = Path(perf.audio_path)
+    audio_url = _file_url(audio_path) if audio_path.exists() else None
+    audio_info = RecordingService().get_audio_info(audio_path) if audio_path.exists() else None
+    return PerformanceItemResponse(
+        performance_id=perf.id,
+        project_id=perf.project_id,
+        title=perf.title,
+        notes=perf.notes,
+        status=perf.status,
+        audio_url=audio_url,
+        audio_filename=audio_path.name,
+        audio_info=audio_info,
+        total_score=perf.total_score,
+        pitch_score=perf.pitch_score,
+        rhythm_score=perf.rhythm_score,
+        completeness_score=perf.completeness_score,
+        stability_score=perf.stability_score,
+        segment_start=perf.segment_start,
+        segment_end=perf.segment_end,
+        segment_duration=perf.segment_duration,
+        segment_note_count=perf.segment_note_count,
+        created_at=perf.created_at,
+        updated_at=perf.updated_at,
+    )
+
+
 async def _save_scoring_results(
     session: AsyncSession,
     perf_svc: PerformanceService,
@@ -436,6 +480,9 @@ async def _save_scoring_results(
     perf.segment_end = segment["end"]
     perf.segment_duration = segment["duration"]
     perf.segment_note_count = segment["note_count"]
+    if not perf.title:
+        perf.title = f"对比 {perf.created_at[:19].replace('T', ' ')}"
+    perf.updated_at = datetime.now(timezone.utc).isoformat()
 
     for nr_data in scoring["note_results"]:
         nr = NoteResultModel(
@@ -744,6 +791,18 @@ async def upload_performance(project_id: str, file: UploadFile, session: AsyncSe
     )
 
 
+@router.get("/projects/{project_id}/performances", response_model=list[PerformanceItemResponse])
+async def list_performances(project_id: str, session: AsyncSession = Depends(get_session)):
+    proj_svc = ProjectService(session)
+    project = await proj_svc.get(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    perf_svc = PerformanceService(session)
+    performances = await perf_svc.list_by_project(project_id)
+    return [_performance_response(perf) for perf in performances]
+
+
 @router.get("/projects/{project_id}/recordings")
 async def list_recordings(project_id: str, session: AsyncSession = Depends(get_session)):
     proj_svc = ProjectService(session)
@@ -762,6 +821,43 @@ async def list_recordings(project_id: str, session: AsyncSession = Depends(get_s
             "info": info,
         })
     return {"recordings": results}
+
+
+@router.get("/performances/{performance_id}", response_model=PerformanceItemResponse)
+async def get_performance(performance_id: str, session: AsyncSession = Depends(get_session)):
+    perf_svc = PerformanceService(session)
+    perf = await perf_svc.get(performance_id)
+    if not perf:
+        raise HTTPException(status_code=404, detail="录音不存在")
+    return _performance_response(perf)
+
+
+@router.patch("/performances/{performance_id}", response_model=PerformanceItemResponse)
+async def update_performance(
+    performance_id: str,
+    body: PerformanceUpdateRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    perf_svc = PerformanceService(session)
+    perf = await perf_svc.update(performance_id, title=body.title, notes=body.notes)
+    if not perf:
+        raise HTTPException(status_code=404, detail="录音不存在")
+    return _performance_response(perf)
+
+
+@router.delete("/performances/{performance_id}")
+async def delete_performance(performance_id: str, session: AsyncSession = Depends(get_session)):
+    perf_svc = PerformanceService(session)
+    perf = await perf_svc.get(performance_id)
+    if not perf:
+        raise HTTPException(status_code=404, detail="录音不存在")
+
+    audio_path = perf.audio_path
+    deleted = await perf_svc.delete(performance_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="录音不存在")
+    _delete_data_file(audio_path)
+    return {"status": "deleted"}
 
 
 @router.get("/performances/{performance_id}/result", response_model=PerformanceResultResponse)

@@ -25,10 +25,13 @@ async def init_db():
             rows = await conn.execute(text("PRAGMA table_info(performances)"))
             existing = {row[1] for row in rows}
             columns = {
+                "title": "TEXT",
+                "notes": "TEXT",
                 "segment_start": "FLOAT",
                 "segment_end": "FLOAT",
                 "segment_duration": "FLOAT",
                 "segment_note_count": "INTEGER",
+                "updated_at": "TEXT",
             }
             for name, column_type in columns.items():
                 if name not in existing:
