@@ -108,7 +108,7 @@ export function DiffViewer({ diffReport, onClose }: DiffViewerProps) {
                         style={{ backgroundColor: issueColorToCss(issue.color) }}
                       />
                       <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <Badge
                             variant={issue.severity === "error" ? "destructive" : "secondary"}
                             className="px-1.5 py-0 text-[10px]"
@@ -119,7 +119,9 @@ export function DiffViewer({ diffReport, onClose }: DiffViewerProps) {
                             第{issue.measure}小节 · 第{issue.beat}拍
                           </span>
                         </div>
-                        <p className="mt-1 text-sm">{issue.feedback}</p>
+                        <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-relaxed">
+                          {issue.feedback}
+                        </p>
                       </div>
                     </div>
                   ))}

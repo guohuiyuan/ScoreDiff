@@ -86,7 +86,7 @@ export function IssuePanel({ diffReport, onViewDetails }: IssuePanelProps) {
                 className="px-2 py-1.5 rounded text-xs border-l-2"
                 style={{ borderLeftColor: colorToCss(issue.color) }}
               >
-                <div className="flex items-center gap-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
                   <Badge
                     variant={issue.severity === "error" ? "destructive" : "secondary"}
                     className="text-[10px] px-1 py-0"
@@ -97,7 +97,7 @@ export function IssuePanel({ diffReport, onViewDetails }: IssuePanelProps) {
                     第{issue.measure}小节 第{issue.beat}拍
                   </span>
                 </div>
-                <p className="mt-0.5">{issue.feedback}</p>
+                <p className="mt-0.5 whitespace-pre-wrap break-words leading-relaxed">{issue.feedback}</p>
               </div>
             ))
           )}
