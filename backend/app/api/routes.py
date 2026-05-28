@@ -539,7 +539,7 @@ async def upload_performance(project_id: str, file: UploadFile, session: AsyncSe
     if not rec_svc.validate_extension(filename):
         raise HTTPException(status_code=400, detail=f"不支持的音频格式: {Path(filename).suffix}")
 
-    dest = rec_svc.save_upload(project_id, filename, file.file)
+    dest = rec_svc.trim_leading_silence(rec_svc.save_upload(project_id, filename, file.file))
 
     perf_svc = PerformanceService(session)
     perf = await perf_svc.create(project_id=project_id, audio_path=str(dest))
