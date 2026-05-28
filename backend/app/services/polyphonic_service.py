@@ -186,7 +186,7 @@ def analyze_performance_polyphonic(
 
     results = []
     for ng in note_groups:
-        if ng["type"] not in ("double_stop", "chord"):
+        if ng["type"].split(":")[0] not in ("double_stop", "chord"):
             results.append({
                 "note_group_id": ng.get("note_group_id", ""),
                 "measure": ng["measure"],

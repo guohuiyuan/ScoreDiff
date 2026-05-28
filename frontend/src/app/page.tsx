@@ -30,6 +30,9 @@ export default function Home() {
   const [seekRequest, setSeekRequest] = useState({ time: 0, version: 0 });
   const [showDiffViewer, setShowDiffViewer] = useState(false);
   const [taskProgress, setTaskProgress] = useState<TaskProgress | null>(null);
+  const [scoreRevision, setScoreRevision] = useState(0);
+  const noteGroups = scoreData?.note_groups ?? [];
+  const scoreViewerKey = `${selectedProjectId ?? "none"}:${scoreRevision}`;
 
   const handleRecordingComplete = useCallback(
     async (blob: Blob, filename: string) => {
@@ -63,6 +66,7 @@ export default function Home() {
             setSelectedProjectId(projectId);
             setSelectedProject(project ?? null);
             setScoreData(score);
+            setScoreRevision((revision) => revision + 1);
             setDiffReport(null);
             setShowDiffViewer(false);
             setTaskProgress(null);
@@ -78,17 +82,20 @@ export default function Home() {
       </aside>
       <main className="flex-1 min-w-0 flex flex-col">
         <ScoreViewer
-          key={`${selectedProjectId ?? "none"}:${scoreData?.note_groups.map((g) => g.note_group_id).join(",") ?? "empty"}`}
+          key={scoreViewerKey}
           projectId={selectedProjectId}
           musicxmlUrl={scoreData?.musicxml_url}
-          noteGroups={scoreData?.note_groups ?? []}
+          noteGroups={noteGroups}
           currentTime={playbackTime}
           colorMap={diffReport?.color_map}
           onSeek={(time) => {
             setPlaybackTime(time);
             setSeekRequest((request) => ({ time, version: request.version + 1 }));
           }}
-          onScoreSaved={setScoreData}
+          onScoreSaved={(score) => {
+            setScoreData(score);
+            setScoreRevision((revision) => revision + 1);
+          }}
         />
         {taskProgress && <TaskProgressBar progress={taskProgress} />}
         <PracticeRecorder
@@ -96,7 +103,7 @@ export default function Home() {
           onRecordingComplete={handleRecordingComplete}
         />
         <PlaybackBar
-          key={`${selectedProjectId ?? "none"}:${timeline?.total_duration ?? 0}`}
+          key={`playback:${selectedProjectId ?? "none"}:${timeline?.total_duration ?? 0}`}
           timeline={timeline}
           instrument={selectedProject?.instrument ?? "violin"}
           seekRequest={seekRequest}

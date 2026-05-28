@@ -35,7 +35,7 @@ def generate_real_scoring(
     stability_values = []
 
     for i, ng in enumerate(note_groups):
-        if ng["type"] == "rest":
+        if ng["type"].split(":")[0] == "rest":
             continue
 
         pitch_r = pitch_results[i] if i < len(pitch_results) else {}
@@ -95,7 +95,7 @@ def generate_real_scoring(
 
 def _determine_status(ng: dict, pitch_r: dict, rhythm_r: dict, poly_r: dict) -> str:
     """Determine the overall status for a note group."""
-    if ng["type"] in ("double_stop", "chord"):
+    if ng["type"].split(":")[0] in ("double_stop", "chord"):
         poly_analysis = poly_r.get("polyphonic_analysis")
         if poly_analysis:
             return poly_analysis["status"]
@@ -127,7 +127,7 @@ def _generate_feedback(ng: dict, pitch_r: dict, rhythm_r: dict, poly_r: dict, st
 
     parts = []
 
-    if ng["type"] in ("double_stop", "chord"):
+    if ng["type"].split(":")[0] in ("double_stop", "chord"):
         poly_analysis = poly_r.get("polyphonic_analysis")
         if poly_analysis:
             ratio = poly_analysis.get("match_ratio", 0)
@@ -160,7 +160,7 @@ def _generate_feedback(ng: dict, pitch_r: dict, rhythm_r: dict, poly_r: dict, st
 
 def _get_detected_names(ng: dict, pitch_r: dict, poly_r: dict) -> list[str]:
     """Get detected note names."""
-    if ng["type"] in ("double_stop", "chord"):
+    if ng["type"].split(":")[0] in ("double_stop", "chord"):
         poly_analysis = poly_r.get("polyphonic_analysis")
         if poly_analysis and poly_analysis.get("detected_pitches"):
             import librosa

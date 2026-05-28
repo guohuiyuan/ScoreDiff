@@ -166,7 +166,7 @@ def analyze_performance_rhythm(
     onset_data = detect_onsets(str(audio_path))
 
     expected_onsets = np.array([
-        ng["start"] for ng in note_groups if ng["type"] != "rest"
+        ng["start"] for ng in note_groups if ng["type"].split(":")[0] != "rest"
     ])
 
     alignment = align_onsets_to_score(onset_data["onset_times"], expected_onsets)
@@ -174,7 +174,7 @@ def analyze_performance_rhythm(
     results = []
     align_idx = 0
     for ng in note_groups:
-        if ng["type"] == "rest":
+        if ng["type"].split(":")[0] == "rest":
             results.append({
                 "note_group_id": ng.get("note_group_id", ""),
                 "measure": ng["measure"],

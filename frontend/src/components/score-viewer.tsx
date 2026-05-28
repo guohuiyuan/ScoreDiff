@@ -52,21 +52,39 @@ type OsmdInstance = {
 
 const BEATS_PER_MEASURE = 4;
 const BEAT_SECONDS = 0.5;
-const STAFF_TOP = 76;
-const STAFF_GAP = 15;
+const STAFF_TOP = 104;
+const STAFF_GAP = 14;
 const MEASURES_PER_SYSTEM = 3;
-const SYSTEM_HEIGHT = 238;
-const MEASURE_WIDTH = 270;
-const LEFT_PAD = 72;
-const RIGHT_PAD = 64;
-const NOTE_STEP = 4.35;
+const SYSTEM_HEIGHT = 264;
+const MEASURE_WIDTH = 306;
+const LEFT_PAD = 118;
+const RIGHT_PAD = 72;
+const NOTE_STEP = 4.15;
+const MEASURE_INSET = 46;
+const STAFF_LINE_COLOR = "#111827";
 
 const DURATIONS = [
+  { label: "32分", seconds: 0.0625 },
   { label: "16分", seconds: 0.125 },
+  { label: "8分三连", seconds: 1 / 6, modifiers: ["tuplet3"] },
   { label: "8分", seconds: 0.25 },
+  { label: "附点8分", seconds: 0.375, modifiers: ["dotted"] },
+  { label: "4分三连", seconds: 1 / 3, modifiers: ["tuplet3"] },
   { label: "4分", seconds: 0.5 },
+  { label: "附点4分", seconds: 0.75, modifiers: ["dotted"] },
   { label: "2分", seconds: 1 },
+  { label: "附点2分", seconds: 1.5, modifiers: ["dotted"] },
   { label: "全音", seconds: 2 },
+];
+
+const ADVANCED_MODIFIERS = [
+  { key: "tuplet3", label: "三连音", mark: "3" },
+  { key: "dotted", label: "附点", mark: "·" },
+  { key: "grace", label: "倚音", mark: "小" },
+  { key: "trill", label: "颤音", mark: "tr" },
+  { key: "turn", label: "回音", mark: "𝆗" },
+  { key: "fermata", label: "延长", mark: "𝄐" },
+  { key: "cadenza", label: "华彩", mark: "自由" },
 ];
 
 export function ScoreViewer({
@@ -84,7 +102,7 @@ export function ScoreViewer({
   const dragRef = useRef<{ index: number; startY: number; startPitch: number } | null>(null);
   const draftIdRef = useRef(0);
   const lastPrintActiveIndexRef = useRef(-1);
-  const [mode, setMode] = useState<ViewMode>("print");
+  const [mode, setMode] = useState<ViewMode>("edit");
   const [editMode, setEditMode] = useState<EditMode>("select");
   const [inputDuration, setInputDuration] = useState(BEAT_SECONDS);
   const [draft, setDraft] = useState<NoteGroup[]>(() => sortGroups(noteGroups.map(normalizeClientGroup)));
@@ -133,10 +151,12 @@ export function ScoreViewer({
 
   function updatePitch(index: number, midi: number) {
     const safeMidi = Math.max(21, Math.min(108, midi));
+    const current = draft[index];
+    const modifiers = current ? noteModifiers(current.type) : new Set<string>();
     updateGroup(index, {
       target_pitches: [safeMidi],
       target_names: [midiToName(safeMidi)],
-      type: "single_note",
+      type: composeNoteType("single_note", modifiers),
     });
   }
 
@@ -148,7 +168,28 @@ export function ScoreViewer({
 
   function setSelectedDuration(seconds: number) {
     if (!selected) return;
-    updateSelected({ end: noteEndFor(selected.measure, selected.start, seconds) });
+    const durationPreset = closestDurationPreset(seconds);
+    const modifiers = noteModifiers(selected.type);
+    modifiers.delete("dotted");
+    modifiers.delete("tuplet3");
+    durationPreset.modifiers?.forEach((modifier) => modifiers.add(modifier));
+    updateSelected({
+      end: noteEndFor(selected.measure, selected.start, seconds),
+      type: composeNoteType(noteBaseType(selected.type), modifiers),
+    });
+  }
+
+  function toggleSelectedModifier(modifier: string) {
+    if (!selected) return;
+    const modifiers = noteModifiers(selected.type);
+    if (modifiers.has(modifier)) {
+      modifiers.delete(modifier);
+    } else {
+      modifiers.add(modifier);
+      if (modifier === "grace") modifiers.delete("cadenza");
+      if (modifier === "cadenza") modifiers.delete("grace");
+    }
+    updateSelected({ type: composeNoteType(noteBaseType(selected.type), modifiers) });
   }
 
   function setSelectedMeasureBeat(measure: number, beat: number) {
@@ -178,7 +219,7 @@ export function ScoreViewer({
       end: noteEndFor(position.measure, startForPosition(position.measure, position.beat), inputDuration),
       target_pitches: [pitch],
       target_names: [midiToName(pitch)],
-      type: "single_note",
+      type: composeNoteType("single_note", inputModifiers(inputDuration)),
     });
     insertDraftNote(note);
   }
@@ -203,8 +244,8 @@ export function ScoreViewer({
     const columnIndex = Math.max(0, Math.min(MEASURES_PER_SYSTEM - 1, Math.floor((point.x - LEFT_PAD) / MEASURE_WIDTH)));
     const measure = measures[systemIndex * MEASURES_PER_SYSTEM + columnIndex] ?? systemIndex * MEASURES_PER_SYSTEM + columnIndex + 1;
     const measureStart = LEFT_PAD + columnIndex * MEASURE_WIDTH;
-    const beatRatio = Math.max(0, Math.min(1, (point.x - measureStart - 32) / (MEASURE_WIDTH - 58)));
-    const beat = clampBeat(Math.round((beatRatio * BEATS_PER_MEASURE + 1) * 4) / 4);
+    const beatRatio = Math.max(0, Math.min(1, (point.x - measureStart - MEASURE_INSET) / (MEASURE_WIDTH - 82)));
+    const beat = clampBeat(Math.round((beatRatio * BEATS_PER_MEASURE + 1) * 24) / 24);
     const staffBottom = systemBottom(systemIndex);
     const midi = Math.max(21, Math.min(108, Math.round(64 + (staffBottom - point.y) / NOTE_STEP)));
     const start = startForPosition(measure, beat);
@@ -217,7 +258,7 @@ export function ScoreViewer({
       end: noteEndFor(measure, start, inputDuration),
       target_pitches: [midi],
       target_names: [midiToName(midi)],
-      type: "single_note",
+      type: composeNoteType("single_note", inputModifiers(inputDuration)),
     });
   }
 
@@ -440,8 +481,9 @@ export function ScoreViewer({
       } else if (event.key === "ArrowDown") {
         event.preventDefault();
         shiftSelectedPitch(-1);
-      } else if (/^[1-5]$/.test(event.key)) {
-        setInputDuration(DURATIONS[Number(event.key) - 1].seconds);
+      } else if (/^[1-9]$/.test(event.key)) {
+        const duration = DURATIONS[Number(event.key) - 1];
+        if (duration) setInputDuration(duration.seconds);
       }
     }
 
@@ -499,7 +541,7 @@ export function ScoreViewer({
             </button>
           </div>
           {viewMode === "edit" && (
-            <div className="inline-flex rounded-md border border-border bg-background p-0.5">
+            <div className="inline-flex rounded-md border border-border bg-background p-0.5 shadow-sm">
               <button
                 type="button"
                 className={`h-7 px-2.5 rounded-sm text-xs ${editMode === "select" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
@@ -519,19 +561,21 @@ export function ScoreViewer({
             </div>
           )}
           {viewMode === "edit" && (
-            <div className="hidden md:flex items-center gap-1">
+            <div className="hidden md:flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50/70 px-2 py-1 text-[11px] text-amber-900">
+              <span>{editMode === "note-input" ? "点击五线谱输入音符" : "拖动音符上下改变音高"}</span>
+              <span className="text-amber-700">·</span>
               {DURATIONS.map((duration, index) => (
                 <button
                   key={duration.seconds}
                   type="button"
-                  className={`h-7 min-w-11 rounded-md border px-2 text-xs ${
+                  className={`h-6 min-w-10 rounded-full border px-2 text-xs ${
                     inputDuration === duration.seconds
                       ? "border-primary bg-primary text-primary-foreground"
-                      : "border-border bg-background text-muted-foreground hover:text-foreground"
+                      : "border-amber-200 bg-white/80 text-amber-800 hover:text-foreground"
                   }`}
                   onClick={() => setInputDuration(duration.seconds)}
                 >
-                  {index + 1}:{duration.label}
+                  {index + 1}:{durationSymbol(duration.seconds)}
                 </button>
               ))}
             </div>
@@ -539,7 +583,12 @@ export function ScoreViewer({
         </div>
 
         <div className="flex items-center gap-2">
-          {dirty && <span className="text-xs text-amber-700">未保存</span>}
+          {selected && viewMode === "edit" && (
+            <span className="hidden rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-700 md:inline">
+              第 {selected.measure} 小节 · 第 {selected.beat} 拍 · {selected.target_names.join("/") || "休止"}
+            </span>
+          )}
+          {dirty && <span className="text-xs font-medium text-amber-700">未保存</span>}
           <Button variant="ghost" size="sm" onClick={addNote} disabled={!draft.length}>
             <Plus />
             添加
@@ -579,17 +628,26 @@ export function ScoreViewer({
       </div>
       {viewMode === "edit" && (
         <div className="flex-1 min-h-0 flex flex-col">
-          <div className="flex-1 min-w-0 overflow-auto bg-muted/20">
+          <div className="flex-1 min-w-0 overflow-auto bg-[#d9d1c2]/40 p-5">
             <svg
               width={svgWidth}
               height={svgHeight}
               viewBox={`0 0 ${svgWidth} ${svgHeight}`}
-              className="block min-h-full bg-white"
+              className="block min-h-full rounded-xl bg-[#fffdf7] shadow-[0_22px_70px_rgba(65,52,33,0.20)]"
               style={{ cursor: editMode === "note-input" ? "crosshair" : "default" }}
               role="img"
               aria-label="可编辑五线谱"
             >
-              <rect x="0" y="0" width={svgWidth} height={svgHeight} fill="#ffffff" />
+              <defs>
+                <pattern id="score-paper-grid" width="24" height="24" patternUnits="userSpaceOnUse">
+                  <path d="M 24 0 L 0 0 0 24" fill="none" stroke="#eadfca" strokeWidth="0.55" opacity="0.45" />
+                </pattern>
+                <filter id="note-shadow" x="-30%" y="-30%" width="160%" height="160%">
+                  <feDropShadow dx="0" dy="1.2" stdDeviation="1.1" floodColor="#111827" floodOpacity="0.18" />
+                </filter>
+              </defs>
+              <rect x="0" y="0" width={svgWidth} height={svgHeight} fill="#fffdf7" />
+              <rect x="0" y="0" width={svgWidth} height={svgHeight} fill="url(#score-paper-grid)" />
               {Array.from({ length: systemCount }).map((_, systemIndex) => {
                 const rowMeasures = measures.slice(
                   systemIndex * MEASURES_PER_SYSTEM,
@@ -601,6 +659,15 @@ export function ScoreViewer({
                 return (
                   <g key={systemIndex}>
                     <rect
+                      x={LEFT_PAD - 22}
+                      y={yTop - 56}
+                      width={Math.max(1, rowMeasures.length) * MEASURE_WIDTH + 44}
+                      height={STAFF_GAP * 4 + 112}
+                      rx="16"
+                      fill={systemIndex % 2 === 0 ? "#fffaf0" : "#fffdf7"}
+                      opacity="0.72"
+                    />
+                    <rect
                       x={LEFT_PAD}
                       y={yTop - 42}
                       width={Math.max(1, rowMeasures.length) * MEASURE_WIDTH}
@@ -608,6 +675,15 @@ export function ScoreViewer({
                       fill="transparent"
                       onPointerDown={(event) => handleStaffPointerDown(event, systemIndex)}
                     />
+                    <text x={LEFT_PAD - 78} y={yTop + 43} fontSize="82" fill="#111827" fontFamily="Georgia, serif">
+                      𝄞
+                    </text>
+                    <text x={LEFT_PAD - 36} y={yTop + 20} fontSize="24" fontWeight="700" fill="#111827">
+                      4
+                    </text>
+                    <text x={LEFT_PAD - 36} y={yTop + 48} fontSize="24" fontWeight="700" fill="#111827">
+                      4
+                    </text>
                     {Array.from({ length: 5 }).map((_, line) => (
                       <line
                         key={line}
@@ -615,22 +691,50 @@ export function ScoreViewer({
                         x2={rowRight}
                         y1={yTop + line * STAFF_GAP}
                         y2={yTop + line * STAFF_GAP}
-                        stroke="#111827"
-                        strokeWidth="1"
+                        stroke={STAFF_LINE_COLOR}
+                        strokeWidth={line === 0 || line === 4 ? "1.25" : "1"}
                       />
                     ))}
                     {rowMeasures.map((measure, columnIndex) => {
                       const x = LEFT_PAD + columnIndex * MEASURE_WIDTH;
                       return (
                         <g key={measure}>
-                          <line x1={x} x2={x} y1={yTop} y2={yBottom} stroke="#111827" strokeWidth="1.5" />
+                          <rect
+                            x={x + 10}
+                            y={yTop - 36}
+                            width={MEASURE_WIDTH - 20}
+                            height={STAFF_GAP * 4 + 96}
+                            rx="10"
+                            fill={selected?.measure === measure ? "#dbeafe" : "transparent"}
+                            opacity={selected?.measure === measure ? 0.34 : 1}
+                          />
+                          <line x1={x} x2={x} y1={yTop - 2} y2={yBottom + 2} stroke="#111827" strokeWidth="1.6" />
                           <text x={x + 8} y={yTop - 20} fontSize="12" fill="#6b7280">
                             {measure}
                           </text>
+                          {Array.from({ length: BEATS_PER_MEASURE }).map((_, beatIndex) => {
+                            const beatX = x + MEASURE_INSET + (beatIndex / BEATS_PER_MEASURE) * (MEASURE_WIDTH - 82);
+                            return (
+                              <g key={beatIndex}>
+                                <line
+                                  x1={beatX}
+                                  x2={beatX}
+                                  y1={yTop - 28}
+                                  y2={yBottom + 44}
+                                  stroke={beatIndex === 0 ? "#c7bda9" : "#e5dccd"}
+                                  strokeWidth={beatIndex === 0 ? "1.1" : "0.8"}
+                                  strokeDasharray={beatIndex === 0 ? undefined : "2 5"}
+                                />
+                                <text x={beatX - 3} y={yBottom + 62} fontSize="9" fill="#9ca3af">
+                                  {beatIndex + 1}
+                                </text>
+                              </g>
+                            );
+                          })}
                         </g>
                       );
                     })}
-                    <line x1={rowRight} x2={rowRight} y1={yTop} y2={yBottom} stroke="#111827" strokeWidth="2" />
+                    <line x1={rowRight} x2={rowRight} y1={yTop - 2} y2={yBottom + 2} stroke="#111827" strokeWidth="2.4" />
                   </g>
                 );
               })}
@@ -651,8 +755,10 @@ export function ScoreViewer({
                 const selectedNote = index === selectedIndex;
                 const activeNote = index === activeIndex;
                 const color = colorToCss(colorMap?.[group.note_group_id] || (selectedNote ? "blue" : "black"));
-                const isRest = group.type === "rest" || group.target_pitches.length === 0;
-                const durationWidth = Math.max(10, (noteDuration(group) / (BEATS_PER_MEASURE * BEAT_SECONDS)) * (MEASURE_WIDTH - 58));
+                const modifiers = noteModifiers(group.type);
+                const isRest = noteBaseType(group.type) === "rest" || group.target_pitches.length === 0;
+                const duration = noteDuration(group);
+                const durationWidth = Math.max(18, (duration / (BEATS_PER_MEASURE * BEAT_SECONDS)) * (MEASURE_WIDTH - 82));
                 return (
                   <g
                     key={`${group.note_group_id}-${index}`}
@@ -663,20 +769,33 @@ export function ScoreViewer({
                     onPointerUp={handlePointerUp}
                     onFocus={() => setSelectedIndex(index)}
                   >
+                    {selectedNote && (
+                      <rect
+                        x={point.x - 28}
+                        y={point.staffTop - 34}
+                        width={Math.min(point.measureRight - point.x + 14, Math.max(56, durationWidth + 36))}
+                        height={STAFF_GAP * 4 + 92}
+                        rx="12"
+                        fill="#eff6ff"
+                        stroke="#2563eb"
+                        strokeWidth="1.25"
+                        strokeDasharray="5 4"
+                      />
+                    )}
                     <line
                       x1={point.x}
                       x2={Math.min(point.measureRight - 10, point.x + durationWidth)}
-                      y1={point.staffBottom + 24}
-                      y2={point.staffBottom + 24}
-                      stroke={selectedNote ? "#93c5fd" : "#d1d5db"}
-                      strokeWidth="4"
+                      y1={point.staffBottom + 30}
+                      y2={point.staffBottom + 30}
+                      stroke={activeNote ? "#14b8a6" : selectedNote ? "#93c5fd" : "#ddd6c6"}
+                      strokeWidth={selectedNote || activeNote ? "5" : "3"}
                       strokeLinecap="round"
                     />
                     {activeNote && (
-                      <circle cx={point.x} cy={point.y} r="22" fill="#ccfbf1" stroke="#0f766e" strokeWidth="2" />
-                    )}
-                    {selectedNote && (
-                      <circle cx={point.x} cy={point.y} r="18" fill="#dbeafe" stroke="#2563eb" strokeWidth="1.5" />
+                      <g>
+                        <circle cx={point.x} cy={point.y} r="25" fill="#ccfbf1" stroke="#0f766e" strokeWidth="2" opacity="0.82" />
+                        <line x1={point.x} x2={point.x} y1={point.staffTop - 34} y2={point.staffBottom + 74} stroke="#0f766e" strokeWidth="2.4" />
+                      </g>
                     )}
                     {ledgerLines(group, point).map((lineY) => (
                       <line
@@ -685,16 +804,40 @@ export function ScoreViewer({
                         x2={point.x + 16}
                         y1={lineY}
                         y2={lineY}
-                        stroke="#111827"
-                        strokeWidth="1"
+                        stroke={STAFF_LINE_COLOR}
+                        strokeWidth="1.2"
                       />
                     ))}
                     {isRest ? (
-                      <rect x={point.x - 8} y={point.staffTop + STAFF_GAP * 1.5} width="16" height="8" fill={color} rx="1" />
+                      <RestGlyph x={point.x} y={point.staffTop + STAFF_GAP * 2} color={color} duration={duration} />
                     ) : (
-                      <NoteGlyph x={point.x} y={point.y} color={color} duration={noteDuration(group)} />
+                      <NoteGlyph
+                        x={point.x}
+                        y={point.y}
+                        color={color}
+                        duration={duration}
+                        stemDirection={point.y < point.staffTop + STAFF_GAP * 2 ? "down" : "up"}
+                      />
                     )}
-                    <text x={point.x - 16} y={point.staffBottom + 42} fontSize="11" fill="#374151">
+                    {modifiers.size > 0 && (
+                      <ModifierGlyphs
+                        x={point.x}
+                        y={point.y}
+                        staffTop={point.staffTop}
+                        staffBottom={point.staffBottom}
+                        measureRight={point.measureRight}
+                        durationWidth={durationWidth}
+                        modifiers={modifiers}
+                        isRest={isRest}
+                      />
+                    )}
+                    <text
+                      x={point.x - 20}
+                      y={point.staffBottom + 52}
+                      fontSize="10"
+                      fill={selectedNote ? "#1d4ed8" : "#6b7280"}
+                      fontWeight={selectedNote ? "700" : "500"}
+                    >
                       {isRest ? "休止" : group.target_names.join("/")}
                     </text>
                   </g>
@@ -780,8 +923,8 @@ export function ScoreViewer({
                       className="mt-1 h-8 w-full rounded-md border border-input bg-background px-2 text-sm"
                       type="number"
                       min={1}
-                      max={4.75}
-                      step={0.25}
+                      max={4.958}
+                      step={1 / 24}
                       value={selected.beat}
                       onChange={(event) => setSelectedMeasureBeat(selected.measure, Number(event.target.value))}
                     />
@@ -800,6 +943,28 @@ export function ScoreViewer({
                       ))}
                     </select>
                   </label>
+                  <div className="md:col-span-4">
+                    <div className="mb-1 text-xs font-medium text-muted-foreground">高级记谱</div>
+                    <div className="flex flex-wrap gap-1">
+                      {ADVANCED_MODIFIERS.map((modifier) => {
+                        const active = noteModifiers(selected.type).has(modifier.key);
+                        return (
+                          <button
+                            key={modifier.key}
+                            type="button"
+                            className={`h-8 rounded-md border px-2 text-xs ${
+                              active
+                                ? "border-primary bg-primary text-primary-foreground"
+                                : "border-border bg-background text-muted-foreground hover:text-foreground"
+                            }`}
+                            onClick={() => toggleSelectedModifier(modifier.key)}
+                          >
+                            {modifier.mark} {modifier.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </div>
               ) : (
                 <div className="text-sm text-muted-foreground">未选择音符</div>
@@ -811,35 +976,185 @@ export function ScoreViewer({
   );
 }
 
-function NoteGlyph({ x, y, color, duration }: { x: number; y: number; color: string; duration: number }) {
+function NoteGlyph({
+  x,
+  y,
+  color,
+  duration,
+  stemDirection,
+}: {
+  x: number;
+  y: number;
+  color: string;
+  duration: number;
+  stemDirection: "up" | "down";
+}) {
   const beats = duration / BEAT_SECONDS;
-  const whole = beats >= 3.5;
-  const open = beats >= 1.5;
-  const flags = beats <= 0.26 ? 2 : beats <= 0.55 ? 1 : 0;
-  const stemTop = y - 42;
+  const whole = beats >= 3.75;
+  const open = beats >= 1.75;
+  const flags = beats <= 0.28 ? 2 : beats <= 0.58 ? 1 : 0;
+  const stemX = stemDirection === "up" ? x + 8.5 : x - 8.5;
+  const stemEndY = stemDirection === "up" ? y - 48 : y + 48;
+  const flagSign = stemDirection === "up" ? 1 : -1;
 
   return (
-    <>
+    <g filter="url(#note-shadow)">
       <ellipse
         cx={x}
         cy={y}
-        rx="10"
-        ry="7"
+        rx="10.5"
+        ry="7.2"
         transform={`rotate(-18 ${x} ${y})`}
         fill={open ? "#ffffff" : color}
         stroke={color}
-        strokeWidth={open ? 2 : 1}
+        strokeWidth={open ? 2.2 : 1.2}
       />
+      {whole && (
+        <ellipse
+          cx={x}
+          cy={y}
+          rx="5.2"
+          ry="2.8"
+          transform={`rotate(-18 ${x} ${y})`}
+          fill="none"
+          stroke={color}
+          strokeWidth="1.8"
+        />
+      )}
       {!whole && (
-        <line x1={x + 8} x2={x + 8} y1={y} y2={stemTop} stroke={color} strokeWidth="2" />
+        <line x1={stemX} x2={stemX} y1={y} y2={stemEndY} stroke={color} strokeWidth="2.4" strokeLinecap="round" />
       )}
       {flags >= 1 && (
-        <path d={`M ${x + 8} ${stemTop} C ${x + 30} ${stemTop + 6}, ${x + 28} ${stemTop + 22}, ${x + 10} ${stemTop + 24}`} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" />
+        <path
+          d={
+            stemDirection === "up"
+              ? `M ${stemX} ${stemEndY} C ${stemX + 25} ${stemEndY + 7}, ${stemX + 24} ${stemEndY + 25}, ${stemX + 4} ${stemEndY + 30}`
+              : `M ${stemX} ${stemEndY} C ${stemX - 25} ${stemEndY - 7}, ${stemX - 24} ${stemEndY - 25}, ${stemX - 4} ${stemEndY - 30}`
+          }
+          fill="none"
+          stroke={color}
+          strokeWidth="2.35"
+          strokeLinecap="round"
+        />
       )}
       {flags >= 2 && (
-        <path d={`M ${x + 8} ${stemTop + 10} C ${x + 28} ${stemTop + 16}, ${x + 26} ${stemTop + 30}, ${x + 10} ${stemTop + 32}`} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" />
+        <path
+          d={
+            stemDirection === "up"
+              ? `M ${stemX} ${stemEndY + 10 * flagSign} C ${stemX + 22} ${stemEndY + 17}, ${stemX + 22} ${stemEndY + 31}, ${stemX + 5} ${stemEndY + 36}`
+              : `M ${stemX} ${stemEndY + 10 * flagSign} C ${stemX - 22} ${stemEndY - 17}, ${stemX - 22} ${stemEndY - 31}, ${stemX - 5} ${stemEndY - 36}`
+          }
+          fill="none"
+          stroke={color}
+          strokeWidth="2.2"
+          strokeLinecap="round"
+        />
       )}
-    </>
+    </g>
+  );
+}
+
+function RestGlyph({ x, y, color, duration }: { x: number; y: number; color: string; duration: number }) {
+  const beats = duration / BEAT_SECONDS;
+  if (beats >= 3.75) {
+    return <rect x={x - 12} y={y - STAFF_GAP + 1} width="24" height="7" fill={color} rx="1.5" />;
+  }
+  if (beats >= 1.75) {
+    return <rect x={x - 12} y={y - 1} width="24" height="7" fill={color} rx="1.5" />;
+  }
+  if (beats <= 0.58) {
+    return (
+      <g fill="none" stroke={color} strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.4" filter="url(#note-shadow)">
+        <path d={`M ${x - 4} ${y - 28} C ${x + 10} ${y - 22}, ${x + 8} ${y - 9}, ${x - 4} ${y - 2} C ${x + 10} ${y + 5}, ${x + 8} ${y + 19}, ${x - 8} ${y + 28}`} />
+        <circle cx={x - 5} cy={y - 29} r="3.4" fill={color} stroke="none" />
+        {beats <= 0.28 && <circle cx={x - 1} cy={y - 5} r="3.2" fill={color} stroke="none" />}
+      </g>
+    );
+  }
+  return (
+    <g fill="none" stroke={color} strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.6" filter="url(#note-shadow)">
+      <path d={`M ${x - 5} ${y - 22} C ${x + 12} ${y - 13}, ${x + 10} ${y + 3}, ${x - 7} ${y + 12} C ${x + 6} ${y + 17}, ${x + 4} ${y + 26}, ${x - 7} ${y + 32}`} />
+      <circle cx={x - 5} cy={y - 22} r="3.6" fill={color} stroke="none" />
+    </g>
+  );
+}
+
+function ModifierGlyphs({
+  x,
+  y,
+  staffTop,
+  staffBottom,
+  measureRight,
+  durationWidth,
+  modifiers,
+  isRest,
+}: {
+  x: number;
+  y: number;
+  staffTop: number;
+  staffBottom: number;
+  measureRight: number;
+  durationWidth: number;
+  modifiers: Set<string>;
+  isRest: boolean;
+}) {
+  const tupletRight = Math.min(measureRight - 10, x + Math.max(34, durationWidth));
+  return (
+    <g>
+      {modifiers.has("dotted") && !isRest && (
+        <circle cx={x + 18} cy={y - 1} r="2.4" fill="#111827" />
+      )}
+      {modifiers.has("tuplet3") && (
+        <g>
+          <path
+            d={`M ${x - 12} ${staffTop - 30} L ${x - 12} ${staffTop - 38} L ${tupletRight} ${staffTop - 38} L ${tupletRight} ${staffTop - 30}`}
+            fill="none"
+            stroke="#111827"
+            strokeWidth="1.3"
+          />
+          <rect x={(x + tupletRight) / 2 - 8} y={staffTop - 47} width="16" height="14" rx="7" fill="#fffdf7" />
+          <text x={(x + tupletRight) / 2 - 3.5} y={staffTop - 36.5} fontSize="12" fontWeight="700" fill="#111827">
+            3
+          </text>
+        </g>
+      )}
+      {modifiers.has("grace") && !isRest && (
+        <g opacity="0.88">
+          <ellipse cx={x - 22} cy={y - 10} rx="6.2" ry="4.2" transform={`rotate(-18 ${x - 22} ${y - 10})`} fill="#ffffff" stroke="#111827" strokeWidth="1.5" />
+          <line x1={x - 17} x2={x - 17} y1={y - 10} y2={y - 39} stroke="#111827" strokeWidth="1.4" />
+          <line x1={x - 29} x2={x - 10} y1={y + 2} y2={y - 36} stroke="#b91c1c" strokeWidth="1.4" />
+        </g>
+      )}
+      {modifiers.has("trill") && !isRest && (
+        <text x={x - 7} y={staffTop - 46} fontSize="15" fontStyle="italic" fontWeight="700" fill="#111827">
+          tr
+        </text>
+      )}
+      {modifiers.has("turn") && !isRest && (
+        <text x={x - 8} y={staffTop - 43} fontSize="18" fill="#111827">
+          𝆗
+        </text>
+      )}
+      {modifiers.has("fermata") && (
+        <text x={x - 10} y={staffTop - 48} fontSize="20" fill="#111827">
+          𝄐
+        </text>
+      )}
+      {modifiers.has("cadenza") && (
+        <g>
+          <path
+            d={`M ${x - 18} ${staffBottom + 72} C ${x + 22} ${staffBottom + 56}, ${tupletRight - 20} ${staffBottom + 88}, ${tupletRight + 16} ${staffBottom + 68}`}
+            fill="none"
+            stroke="#b45309"
+            strokeWidth="1.8"
+            strokeDasharray="5 4"
+          />
+          <text x={x - 16} y={staffBottom + 88} fontSize="11" fontWeight="700" fill="#b45309">
+            华彩 / ad lib.
+          </text>
+        </g>
+      )}
+    </g>
   );
 }
 
@@ -849,7 +1164,7 @@ function notePoint(group: NoteGroup, measures: number[]) {
   const columnIndex = measureIndex % MEASURES_PER_SYSTEM;
   const measureStart = LEFT_PAD + columnIndex * MEASURE_WIDTH;
   const beatRatio = Math.max(0, Math.min(1, ((group.beat || 1) - 1) / BEATS_PER_MEASURE));
-  const x = measureStart + 32 + beatRatio * (MEASURE_WIDTH - 58);
+  const x = measureStart + MEASURE_INSET + beatRatio * (MEASURE_WIDTH - 82);
   const staffTop = systemTop(systemIndex);
   const staffBottom = systemBottom(systemIndex);
   const pitch = group.target_pitches[0] ?? 71;
@@ -872,7 +1187,7 @@ function systemBottom(systemIndex: number) {
 }
 
 function ledgerLines(group: NoteGroup, point: { x: number; y: number; staffTop: number; staffBottom: number }) {
-  if (group.type === "rest" || !group.target_pitches.length) return [];
+  if (noteBaseType(group.type) === "rest" || !group.target_pitches.length) return [];
   const lines: number[] = [];
   if (point.y < point.staffTop) {
     for (let y = point.staffTop - STAFF_GAP; y >= point.y - 2; y -= STAFF_GAP) lines.push(y);
@@ -887,11 +1202,12 @@ function normalizeClientGroup(group: NoteGroup): NoteGroup {
   const measure = Math.max(1, Math.round(Number(group.measure) || 1));
   const beat = clampBeat(Number(group.beat) || 1);
   const start = startForPosition(measure, beat);
-  const rawDuration = Math.max(0.125, Number(group.end) - Number(group.start) || BEAT_SECONDS);
+  const rawDuration = Math.max(0.0625, Number(group.end) - Number(group.start) || BEAT_SECONDS);
   const end = noteEndFor(measure, start, rawDuration);
   const pitches = (group.target_pitches || []).map((p) => Math.max(21, Math.min(108, Number(p) || 69)));
   const names = pitches.length ? pitches.map(midiToName) : [];
-  const type = pitches.length === 0 ? "rest" : pitches.length === 1 ? "single_note" : pitches.length === 2 ? "double_stop" : "chord";
+  const baseType = pitches.length === 0 ? "rest" : pitches.length === 1 ? "single_note" : pitches.length === 2 ? "double_stop" : "chord";
+  const type = composeNoteType(baseType, noteModifiers(group.type));
   return {
     ...group,
     measure,
@@ -909,7 +1225,7 @@ function sortGroups(groups: NoteGroup[]) {
 }
 
 function clampBeat(beat: number): number {
-  return Math.max(1, Math.min(4.75, Math.round((Number(beat) || 1) * 4) / 4));
+  return Math.max(1, Math.min(4.958, Math.round((Number(beat) || 1) * 24) / 24));
 }
 
 function startForPosition(measure: number, beat: number): number {
@@ -918,7 +1234,7 @@ function startForPosition(measure: number, beat: number): number {
 
 function noteEndFor(measure: number, start: number, duration: number): number {
   const measureEnd = ((Math.max(1, measure) - 1) * BEATS_PER_MEASURE + BEATS_PER_MEASURE) * BEAT_SECONDS;
-  const safeDuration = Math.max(0.125, Number(duration) || BEAT_SECONDS);
+  const safeDuration = Math.max(0.0625, Number(duration) || BEAT_SECONDS);
   return Number(Math.min(start + safeDuration, measureEnd).toFixed(4));
 }
 
@@ -931,7 +1247,7 @@ function positionFromStart(start: number) {
 }
 
 function noteDuration(group: NoteGroup): number {
-  return Math.max(0.125, Number((group.end - group.start).toFixed(4)));
+  return Math.max(0.0625, Number((group.end - group.start).toFixed(4)));
 }
 
 function midiToName(midi: number): string {
@@ -942,9 +1258,41 @@ function midiToName(midi: number): string {
 }
 
 function closestDuration(seconds: number): number {
+  return closestDurationPreset(seconds).seconds;
+}
+
+function closestDurationPreset(seconds: number): { label: string; seconds: number; modifiers?: string[] } {
   return DURATIONS.reduce((best, current) => (
     Math.abs(current.seconds - seconds) < Math.abs(best.seconds - seconds) ? current : best
-  )).seconds;
+  ));
+}
+
+function noteBaseType(type: string): string {
+  const base = String(type || "").split(":")[0];
+  return ["single_note", "double_stop", "chord", "rest"].includes(base) ? base : "single_note";
+}
+
+function noteModifiers(type: string): Set<string> {
+  const parts = String(type || "").split(":").slice(1);
+  return new Set(parts.flatMap((part) => part.split(",")).filter(Boolean));
+}
+
+function composeNoteType(base: string, modifiers: Set<string>): string {
+  const cleanBase = noteBaseType(base);
+  const cleanModifiers = [...modifiers].filter(Boolean).sort();
+  return cleanModifiers.length ? `${cleanBase}:${cleanModifiers.join(",")}` : cleanBase;
+}
+
+function inputModifiers(seconds: number): Set<string> {
+  return new Set(closestDurationPreset(seconds).modifiers ?? []);
+}
+
+function durationSymbol(seconds: number): string {
+  if (seconds <= 0.13) return "𝅘𝅥𝅯";
+  if (seconds <= 0.26) return "𝅘𝅥𝅮";
+  if (seconds <= 0.51) return "♩";
+  if (seconds <= 1.01) return "𝅗𝅥";
+  return "𝅝";
 }
 
 function svgPoint(event: ReactPointerEvent<SVGElement>) {

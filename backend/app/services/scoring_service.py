@@ -17,7 +17,7 @@ def generate_mock_scoring(note_groups: list[dict], performance_id: str) -> dict:
     onset_errors = []
 
     for ng in note_groups:
-        if ng["type"] == "rest":
+        if ng["type"].split(":")[0] == "rest":
             continue
 
         pitch_err = random.gauss(0, 20)

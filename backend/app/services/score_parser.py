@@ -2,7 +2,7 @@
 from pathlib import Path
 from typing import Union
 
-from music21 import chord, converter, instrument, metadata, meter, note, pitch, stream
+from music21 import chord, converter, duration, expressions, instrument, metadata, meter, note, pitch, stream
 
 
 def _parse_score_object_to_note_groups(score, bpm: float = 120.0) -> list[dict]:
@@ -76,24 +76,57 @@ def _duration_to_quarter_length(start: float, end: float, bpm: float) -> float:
     beat_duration = 60.0 / bpm
     duration_seconds = max(0.05, float(end) - float(start))
     quarter_length = duration_seconds / beat_duration
-    return max(0.25, round(quarter_length * 4) / 4)
+    return max(0.125, round(quarter_length * 24) / 24)
 
 
 def _bounded_beat(beat: float) -> float:
-    return max(1.0, min(4.75, round(float(beat) * 4) / 4))
+    return max(1.0, min(4.958, round(float(beat) * 24) / 24))
+
+
+def _split_note_type(note_type: str) -> tuple[str, set[str]]:
+    parts = str(note_type or "").split(":")
+    base = parts[0] if parts[0] in {"single_note", "double_stop", "chord", "rest"} else "single_note"
+    modifiers = {item for part in parts[1:] for item in part.split(",") if item}
+    return base, modifiers
+
+
+def _compose_note_type(base: str, modifiers: set[str]) -> str:
+    if not modifiers:
+        return base
+    return f"{base}:{','.join(sorted(modifiers))}"
 
 
 def _make_music21_element(group: dict, quarter_length: float):
     pitches = [int(p) for p in group.get("target_pitches", []) if p is not None]
-    note_type = group.get("type") or ("rest" if not pitches else "single_note")
+    note_type, modifiers = _split_note_type(group.get("type") or ("rest" if not pitches else "single_note"))
 
     if note_type == "rest" or not pitches:
-        return note.Rest(quarterLength=quarter_length)
-    if len(pitches) == 1:
+        element = note.Rest(quarterLength=quarter_length)
+    elif len(pitches) == 1:
         element = note.Note(quarterLength=quarter_length)
         element.pitch.midi = pitches[0]
-        return element
-    return chord.Chord(pitches, quarterLength=quarter_length)
+    else:
+        element = chord.Chord(pitches, quarterLength=quarter_length)
+
+    if "dotted" in modifiers:
+        element.duration.dots = 1
+    if "tuplet3" in modifiers:
+        try:
+            element.duration.appendTuplet(duration.Tuplet(3, 2))
+        except Exception:
+            pass
+    if "grace" in modifiers and not isinstance(element, note.Rest):
+        try:
+            element = element.getGrace()
+        except Exception:
+            element.duration.quarterLength = 0.125
+    if "trill" in modifiers and not isinstance(element, note.Rest):
+        element.expressions.append(expressions.Trill())
+    if "turn" in modifiers and not isinstance(element, note.Rest):
+        element.expressions.append(expressions.Turn())
+    if "fermata" in modifiers:
+        element.expressions.append(expressions.Fermata())
+    return element
 
 
 def _instrument_for_name(instrument_name: str):
@@ -137,6 +170,7 @@ def build_score_from_note_groups(
         if measure_no == 1:
             measure.append(meter.TimeSignature("4/4"))
 
+        cadenza_measure = any("cadenza" in _split_note_type(group.get("type", ""))[1] for group in grouped[measure_no])
         cursor = 0.0
         for group in sorted(grouped[measure_no], key=lambda g: (float(g.get("beat") or 1), float(g.get("start") or 0))):
             start = float(group.get("start") or 0)
@@ -151,14 +185,16 @@ def build_score_from_note_groups(
                 measure.append(note.Rest(quarterLength=round(offset - cursor, 4)))
                 cursor = offset
 
-            quarter_length = min(_duration_to_quarter_length(start, end, bpm), 4.0 - cursor)
+            quarter_length = _duration_to_quarter_length(start, end, bpm)
+            if not cadenza_measure:
+                quarter_length = min(quarter_length, 4.0 - cursor)
             if quarter_length <= 0:
                 continue
 
             measure.append(_make_music21_element(group, quarter_length))
             cursor = round(cursor + quarter_length, 4)
 
-        if cursor < 4.0:
+        if cursor < 4.0 and not cadenza_measure:
             measure.append(note.Rest(quarterLength=round(4.0 - cursor, 4)))
 
         part.append(measure)
@@ -193,7 +229,7 @@ def normalize_note_group(group: dict, bpm: float = 120.0) -> dict:
     measure_end = ((measure - 1) * 4 + 4) * beat_duration
     end = min(end, measure_end)
     if end <= start:
-        end = min(start + (0.25 * beat_duration), measure_end)
+        end = min(start + (0.125 * beat_duration), measure_end)
 
     pitches = [int(p) for p in group.get("target_pitches", []) if p is not None]
     names = group.get("target_names") or [_midi_name(p) for p in pitches]
@@ -201,13 +237,14 @@ def normalize_note_group(group: dict, bpm: float = 120.0) -> dict:
         names = [_midi_name(p) for p in pitches]
 
     if not pitches:
-        note_type = "rest"
+        base_type = "rest"
     elif len(pitches) == 1:
-        note_type = "single_note"
+        base_type = "single_note"
     elif len(pitches) == 2:
-        note_type = "double_stop"
+        base_type = "double_stop"
     else:
-        note_type = "chord"
+        base_type = "chord"
+    _, modifiers = _split_note_type(group.get("type") or base_type)
 
     return {
         "measure": measure,
@@ -216,7 +253,7 @@ def normalize_note_group(group: dict, bpm: float = 120.0) -> dict:
         "end": round(end, 4),
         "target_pitches": pitches,
         "target_names": names,
-        "type": note_type,
+        "type": _compose_note_type(base_type, modifiers),
     }
 
 

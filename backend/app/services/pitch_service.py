@@ -141,7 +141,7 @@ def analyze_performance_pitch(
 
     results = []
     for ng in note_groups:
-        if ng["type"] == "rest" or not ng["target_pitches"]:
+        if ng["type"].split(":")[0] == "rest" or not ng["target_pitches"]:
             results.append({
                 "note_group_id": ng.get("note_group_id", ""),
                 "measure": ng["measure"],
