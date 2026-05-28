@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useRef, useState, type ChangeEvent } from "react";
 import { Button } from "@/components/ui/button";
-import { Mic, Square } from "lucide-react";
+import { Mic, Square, Upload } from "lucide-react";
 import { type CompareSegment } from "@/lib/api";
 
 interface PracticeRecorderProps {
@@ -16,6 +16,7 @@ export function PracticeRecorder({ projectId, compareRange, onRecordingComplete 
   const [duration, setDuration] = useState(0);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startTimeRef = useRef<number>(0);
@@ -78,6 +79,17 @@ export function PracticeRecorder({ projectId, compareRange, onRecordingComplete 
     setRecording(false);
   }, []);
 
+  const uploadRecording = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    if (!projectId || selectedSegment.end <= selectedSegment.start) return;
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    setAudioUrl(url);
+    setDuration(0);
+    onRecordingComplete?.(file, file.name || `upload_${Date.now()}`, selectedSegment);
+    event.target.value = "";
+  }, [projectId, selectedSegment, onRecordingComplete]);
+
   function formatDuration(seconds: number): string {
     const m = Math.floor(seconds / 60);
     const s = seconds % 60;
@@ -95,17 +107,36 @@ export function PracticeRecorder({ projectId, compareRange, onRecordingComplete 
         )}
       </div>
       <div className="flex flex-col gap-2">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.webm,.flac"
+        className="hidden"
+        onChange={uploadRecording}
+      />
       {!recording ? (
-        <Button
-          variant="default"
-          size="sm"
-          onClick={startRecording}
-          disabled={!projectId || selectedSegment.end <= selectedSegment.start}
-          className="w-full gap-1.5"
-        >
-          <Mic className="h-4 w-4" />
-          开始录音
-        </Button>
+        <>
+          <Button
+            variant="default"
+            size="sm"
+            onClick={startRecording}
+            disabled={!projectId || selectedSegment.end <= selectedSegment.start}
+            className="w-full gap-1.5"
+          >
+            <Mic className="h-4 w-4" />
+            开始录音
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={!projectId || selectedSegment.end <= selectedSegment.start}
+            className="w-full gap-1.5"
+          >
+            <Upload className="h-4 w-4" />
+            上传录音对比
+          </Button>
+        </>
       ) : (
         <>
           <Button variant="destructive" size="sm" onClick={stopRecording} className="w-full gap-1.5">
