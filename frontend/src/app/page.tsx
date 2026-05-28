@@ -33,6 +33,8 @@ export default function Home() {
   const [taskProgress, setTaskProgress] = useState<TaskProgress | null>(null);
   const [scoreRevision, setScoreRevision] = useState(0);
   const [compareRange, setCompareRange] = useState<[number, number]>([0, 0]);
+  const [projectPanelCollapsed, setProjectPanelCollapsed] = useState(false);
+  const [practicePanelCollapsed, setPracticePanelCollapsed] = useState(false);
   const noteGroups = scoreData?.note_groups ?? [];
   const scoreViewerKey = `${selectedProjectId ?? "none"}:${scoreRevision}`;
 
@@ -68,26 +70,39 @@ export default function Home() {
 
   return (
     <div className="h-full flex">
-      <aside className="w-64 border-r border-border flex-shrink-0 h-full overflow-hidden">
-        <ProjectSidebar
-          onProjectSelect={(score, projectId, project) => {
-            setSelectedProjectId(projectId);
-            setSelectedProject(project ?? null);
-            setScoreData(score);
-            setScoreRevision((revision) => revision + 1);
-            setDiffReport(null);
-            setShowDiffViewer(false);
-            setTaskProgress(null);
-            setPlaybackTime(0);
-            setCompareRange([0, 0]);
-            setSeekRequest((request) => ({ time: 0, version: request.version + 1 }));
-          }}
-          onDiffReady={(report) => {
-            setDiffReport(report);
-            if (report) setShowDiffViewer(true);
-          }}
-          onTimelineReady={handleTimelineReady}
-        />
+      <aside className={`${projectPanelCollapsed ? "w-12" : "w-64"} border-r border-border flex-shrink-0 h-full overflow-hidden transition-[width]`}>
+        <div className="flex h-full min-h-0 flex-col">
+          <button
+            type="button"
+            className="flex h-10 flex-shrink-0 items-center justify-center border-b border-border px-2 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+            onClick={() => setProjectPanelCollapsed((collapsed) => !collapsed)}
+          >
+            {projectPanelCollapsed ? "项目" : "收起项目列表"}
+          </button>
+          {!projectPanelCollapsed && (
+            <div className="min-h-0 flex-1">
+              <ProjectSidebar
+                onProjectSelect={(score, projectId, project) => {
+                  setSelectedProjectId(projectId);
+                  setSelectedProject(project ?? null);
+                  setScoreData(score);
+                  setScoreRevision((revision) => revision + 1);
+                  setDiffReport(null);
+                  setShowDiffViewer(false);
+                  setTaskProgress(null);
+                  setPlaybackTime(0);
+                  setCompareRange([0, 0]);
+                  setSeekRequest((request) => ({ time: 0, version: request.version + 1 }));
+                }}
+                onDiffReady={(report) => {
+                  setDiffReport(report);
+                  if (report) setShowDiffViewer(true);
+                }}
+                onTimelineReady={handleTimelineReady}
+              />
+            </div>
+          )}
+        </div>
       </aside>
       <main className="flex-1 min-w-0 flex flex-col">
         <ScoreViewer
@@ -118,18 +133,29 @@ export default function Home() {
           compareRange={compareRange}
         />
       </main>
-      <aside className="w-80 flex-shrink-0 border-l border-border bg-background flex flex-col">
-        <PracticeRecorder
-          projectId={selectedProjectId}
-          compareRange={compareRange}
-          onRecordingComplete={handleRecordingComplete}
-        />
-        <div className="min-h-0 flex-1">
-          <IssuePanel
-            diffReport={diffReport}
-            onViewDetails={() => setShowDiffViewer(true)}
-          />
-        </div>
+      <aside className={`${practicePanelCollapsed ? "w-12" : "w-80"} flex-shrink-0 border-l border-border bg-background flex flex-col transition-[width]`}>
+        <button
+          type="button"
+          className="flex h-10 flex-shrink-0 items-center justify-center border-b border-border px-2 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+          onClick={() => setPracticePanelCollapsed((collapsed) => !collapsed)}
+        >
+          {practicePanelCollapsed ? "检测" : "收起检测"}
+        </button>
+        {!practicePanelCollapsed && (
+          <>
+            <PracticeRecorder
+              projectId={selectedProjectId}
+              compareRange={compareRange}
+              onRecordingComplete={handleRecordingComplete}
+            />
+            <div className="min-h-0 flex-1">
+              <IssuePanel
+                diffReport={diffReport}
+                onViewDetails={() => setShowDiffViewer(true)}
+              />
+            </div>
+          </>
+        )}
       </aside>
 
       {showDiffViewer && (

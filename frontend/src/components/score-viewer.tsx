@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { Edit3, Flag, Minus, MousePointer2, Plus, Save, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -43,7 +43,15 @@ type OsmdVoiceEntry = {
 };
 type OsmdIterator = {
   endReached: boolean;
+  EndReached?: boolean;
   currentVoiceEntries: OsmdVoiceEntry[];
+  CurrentMeasure?: {
+    MeasureNumber?: number;
+    MeasureNumberXML?: number;
+  };
+  CurrentRelativeInMeasureTimestamp?: {
+    RealValue?: number;
+  };
   reset: () => void;
   moveToNext: () => void;
 };
@@ -58,17 +66,6 @@ type OsmdInstance = {
     hide?: () => void;
     update?: () => void;
   };
-};
-type PrintLineAnchor = {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-};
-type PrintCursorAnchors = {
-  index: number;
-  current: PrintLineAnchor | null;
-  next: PrintLineAnchor | null;
 };
 type ScoreDisplayMetadata = {
   keyFifths: number;
@@ -140,11 +137,9 @@ export function ScoreViewer({
 }: ScoreViewerProps) {
   const printScrollRef = useRef<HTMLDivElement>(null);
   const printContainerRef = useRef<HTMLDivElement>(null);
-  const printProgressLineRef = useRef<HTMLDivElement>(null);
   const editScrollRef = useRef<HTMLDivElement>(null);
   const editSvgRef = useRef<SVGSVGElement>(null);
   const osmdRef = useRef<OsmdInstance | null>(null);
-  const printCursorAnchorsRef = useRef<PrintCursorAnchors | null>(null);
   const dragRef = useRef<{ index: number; startY: number; startPitch: number } | null>(null);
   const draftIdRef = useRef(0);
   const lastPrintActiveIndexRef = useRef(-1);
@@ -179,7 +174,6 @@ export function ScoreViewer({
   const rangeLabel = formatRangeLabel(normalizedCompareRange, draft);
   const timeSignatureParts = splitTimeSignature(scoreMetadata.timeSignature);
   const keySignatureText = keySignatureLabel(scoreMetadata.keyFifths, scoreMetadata.keyMode);
-  const measuresKey = measures.join(",");
 
   function markDraft(next: NoteGroup[], nextSelectedId?: string | null) {
     const sorted = sortGroups(next.map(normalizeClientGroup));
@@ -300,6 +294,15 @@ export function ScoreViewer({
     onSeek?.(next[0]);
   }
 
+  function resetRangeToFullScore() {
+    if (!draft.length) return;
+    const sorted = sortGroups(draft);
+    const end = Math.max(...sorted.map((group) => Number(group.end) || 0));
+    const next: [number, number] = [0, roundTime(end)];
+    onCompareRangeChange?.(next);
+    onSeek?.(0);
+  }
+
   function insertDraftNote(note: NoteGroup) {
     const normalized = normalizeClientGroup(note);
     markDraft([...draft, normalized], normalized.note_group_id);
@@ -390,7 +393,7 @@ export function ScoreViewer({
     setEditMode("select");
     setSelectedIndex(index);
     onSeek?.(group.start);
-    syncPrintCursor(index);
+    syncPrintCursor(group);
     scrollPrintToIndex(index, "smooth");
   }
 
@@ -416,14 +419,11 @@ export function ScoreViewer({
     return bestIndex;
   }
 
-  function syncPrintCursor(index: number) {
+  function syncPrintCursor(group: NoteGroup) {
     const osmd = osmdRef.current;
-    if (!syncOsmdCursorToIndex(osmd, index)) {
+    if (!syncOsmdCursorToScorePosition(osmd, group.measure, group.beat)) {
       osmd?.cursor?.hide?.();
-      printCursorAnchorsRef.current = null;
-      return;
     }
-    printCursorAnchorsRef.current = measurePrintCursorAnchors(osmd, printContainerRef.current, index, draft.length);
   }
 
   function scrollPrintToIndex(index: number, behavior: ScrollBehavior) {
@@ -467,7 +467,6 @@ export function ScoreViewer({
         osmdRef.current.clear?.();
         osmdRef.current = null;
       }
-      printCursorAnchorsRef.current = null;
       lastPrintActiveIndexRef.current = -1;
       return;
     }
@@ -480,7 +479,6 @@ export function ScoreViewer({
       setError(null);
 
       try {
-        printCursorAnchorsRef.current = null;
         lastPrintActiveIndexRef.current = -1;
         const { OpenSheetMusicDisplay } = await import("opensheetmusicdisplay");
         if (cancelled) return;
@@ -527,29 +525,23 @@ export function ScoreViewer({
 
   useEffect(() => {
     if (viewMode !== "print") return;
-    if (
-      activeIndex === lastPrintActiveIndexRef.current &&
-      printCursorAnchorsRef.current?.index === activeIndex &&
-      printReadyRevision > 0
-    ) {
+    if (activeIndex === lastPrintActiveIndexRef.current && printReadyRevision > 0) {
       return;
     }
     const osmd = osmdRef.current;
     if (!osmd || activeIndex < 0) {
       osmd?.cursor?.hide?.();
-      printCursorAnchorsRef.current = null;
       return;
     }
-    if (!syncOsmdCursorToIndex(osmd, activeIndex)) {
+    const group = draft[activeIndex];
+    if (!group) return;
+    if (!syncOsmdCursorToScorePosition(osmd, group.measure, group.beat)) {
       osmd.cursor?.hide?.();
-      printCursorAnchorsRef.current = null;
       return;
     }
-    printCursorAnchorsRef.current = measurePrintCursorAnchors(osmd, printContainerRef.current, activeIndex, draft.length);
     lastPrintActiveIndexRef.current = activeIndex;
 
     const scroller = printScrollRef.current;
-    const group = draft[activeIndex];
     if (!scroller || !group) return;
     const localMeasures = Array.from(new Set(draft.map((item) => item.measure || 1))).sort((a, b) => a - b);
     if (localMeasures.length <= 1) return;
@@ -558,25 +550,6 @@ export function ScoreViewer({
     const top = ratio * Math.max(0, scroller.scrollHeight - scroller.clientHeight);
     scroller.scrollTo({ top: Math.max(0, top - 80), behavior: "auto" });
   }, [viewMode, activeIndex, printReadyRevision, draft]);
-
-  useEffect(() => {
-    const line = printProgressLineRef.current;
-    if (!line) return;
-    if (viewMode !== "print") {
-      line.style.display = "none";
-      return;
-    }
-    const osmd = osmdRef.current;
-    const printMeasures = measuresKey.split(",").map(Number).filter((measure) => Number.isFinite(measure));
-    let anchors = printCursorAnchorsRef.current?.index === activeIndex ? printCursorAnchorsRef.current : null;
-    if (!anchors && osmd && activeIndex >= 0) {
-      anchors = measurePrintCursorAnchors(osmd, printContainerRef.current, activeIndex, draft.length);
-      printCursorAnchorsRef.current = anchors;
-    }
-    const preciseStyle = interpolatedPrintProgressLineStyle(activeGroup, currentTime, anchors);
-    const fallbackStyle = printProgressLineStyle(activeGroup, printMeasures, printContainerRef.current);
-    applyPrintProgressLine(line, preciseStyle ?? fallbackStyle);
-  }, [viewMode, activeIndex, activeGroup, currentTime, measuresKey, printReadyRevision, draft.length]);
 
   useEffect(() => {
     if (viewMode !== "edit") return;
@@ -755,6 +728,13 @@ export function ScoreViewer({
                 <Flag className="size-3" />
                 终点
               </button>
+              <button
+                type="button"
+                className="inline-flex h-6 items-center gap-1 rounded-full border border-slate-300 bg-white px-2 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+                onClick={resetRangeToFullScore}
+              >
+                全曲
+              </button>
             </div>
           )}
           {selected && viewMode === "edit" && (
@@ -798,20 +778,10 @@ export function ScoreViewer({
             正在播放：第 {activeGroup.measure} 小节 第 {activeGroup.beat} 拍 · {formatTargetNames(activeGroup)}
           </div>
         )}
-        <div className="relative min-h-full">
-          <div
-            ref={printProgressLineRef}
-            className="pointer-events-none absolute z-20 hidden rounded-full bg-teal-500 shadow-[0_0_0_2px_rgba(20,184,166,0.22),0_0_18px_rgba(20,184,166,0.35)]"
-          >
-            <span className="absolute -top-6 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-teal-300 bg-teal-50 px-2 py-0.5 text-[11px] font-medium text-teal-800">
-              播放
-            </span>
-          </div>
-          <div
-            ref={printContainerRef}
-            className="min-h-full p-4 [&_svg]:h-auto [&_svg]:max-w-full"
-          />
-        </div>
+        <div
+          ref={printContainerRef}
+          className="min-h-full p-4 [&_svg]:h-auto [&_svg]:max-w-full"
+        />
       </div>
       {viewMode === "edit" && (
         <div className="flex-1 min-h-0 flex flex-col">
@@ -1513,132 +1483,42 @@ function syncOsmdCursorToIndex(osmd: OsmdInstance | null, index: number): boolea
   }
 }
 
-function measurePrintCursorAnchors(
-  osmd: OsmdInstance | null,
-  container: HTMLDivElement | null,
-  index: number,
-  total: number,
-): PrintCursorAnchors | null {
-  if (!osmd || !container || index < 0) return null;
-  if (!syncOsmdCursorToIndex(osmd, index)) return null;
+function syncOsmdCursorToScorePosition(osmd: OsmdInstance | null, measure: number, beat: number): boolean {
+  const cursor = osmd?.cursor;
+  const iterator = cursor?.iterator;
+  if (!cursor || !iterator) return false;
 
-  const current = readOsmdCursorAnchor(osmd, container);
-  const nextIndex = Math.min(Math.max(0, total - 1), index + 1);
-  let next: PrintLineAnchor | null = null;
+  const targetMeasure = Math.max(1, Math.round(Number(measure) || 1));
+  const targetOffset = Math.max(0, Number(beat) - 1 || 0);
 
-  if (nextIndex !== index && syncOsmdCursorToIndex(osmd, nextIndex)) {
-    next = readOsmdCursorAnchor(osmd, container);
-    syncOsmdCursorToIndex(osmd, index);
+  try {
+    iterator.reset();
+    let bestDistance = Number.POSITIVE_INFINITY;
+    let bestIndex = 0;
+    let index = 0;
+
+    while (!iterator.endReached && !iterator.EndReached) {
+      const currentMeasure = iterator.CurrentMeasure?.MeasureNumberXML ?? iterator.CurrentMeasure?.MeasureNumber;
+      const currentOffset = iterator.CurrentRelativeInMeasureTimestamp?.RealValue ?? 0;
+      if (currentMeasure === targetMeasure) {
+        const distance = Math.abs(currentOffset - targetOffset);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestIndex = index;
+        }
+        if (currentOffset >= targetOffset) break;
+      } else if (currentMeasure && currentMeasure > targetMeasure) {
+        break;
+      }
+      iterator.moveToNext();
+      index += 1;
+    }
+
+    if (!Number.isFinite(bestDistance)) return false;
+    return syncOsmdCursorToIndex(osmd, bestIndex);
+  } catch {
+    return false;
   }
-
-  return { index, current, next };
-}
-
-function readOsmdCursorAnchor(osmd: OsmdInstance | null, container: HTMLDivElement | null): PrintLineAnchor | null {
-  if (!container) return null;
-  const element = findOsmdCursorElement(osmd, container);
-  if (!element) return null;
-
-  const rect = element.getBoundingClientRect();
-  const containerRect = container.getBoundingClientRect();
-  if (rect.width <= 0 || rect.height <= 0) return null;
-
-  return {
-    left: rect.left - containerRect.left,
-    top: rect.top - containerRect.top,
-    width: rect.width,
-    height: rect.height,
-  };
-}
-
-function findOsmdCursorElement(osmd: OsmdInstance | null, container: HTMLDivElement): Element | null {
-  const directElement = osmd?.cursor?.cursorElement;
-  if (directElement?.isConnected) return directElement;
-
-  return Array.from(container.querySelectorAll("[id*='cursor' i], [class*='cursor' i]")).find((element) => {
-    const rect = element.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
-  }) ?? null;
-}
-
-function interpolatedPrintProgressLineStyle(
-  group: NoteGroup | null,
-  time: number,
-  anchors: PrintCursorAnchors | null,
-): CSSProperties | null {
-  const current = anchors?.current;
-  if (!group || !current) return null;
-
-  const duration = Math.max(0.001, noteDuration(group));
-  const ratio = Math.max(0, Math.min(1, (time - group.start) / duration));
-  const next = anchors.next;
-  const sameSystem = next ? Math.abs(next.top - current.top) < Math.max(36, Math.min(current.height, next.height) * 0.4) : false;
-  const target = sameSystem ? next : null;
-
-  return lineAnchorStyle({
-    left: target ? current.left + (target.left - current.left) * ratio : current.left,
-    top: target ? current.top + (target.top - current.top) * ratio : current.top,
-    width: target ? current.width + (target.width - current.width) * ratio : current.width,
-    height: target ? current.height + (target.height - current.height) * ratio : current.height,
-  });
-}
-
-function lineAnchorStyle(anchor: PrintLineAnchor): CSSProperties {
-  const width = 3;
-  return {
-    left: `${Math.round(anchor.left)}px`,
-    top: `${Math.round(anchor.top)}px`,
-    height: `${Math.round(Math.max(40, anchor.height))}px`,
-    width: `${width}px`,
-  };
-}
-
-function printProgressLineStyle(
-  group: NoteGroup | null,
-  measures: number[],
-  container: HTMLDivElement | null,
-): CSSProperties | null {
-  if (!group || !container || !measures.length) return null;
-  const svg = container.querySelector("svg") as SVGSVGElement | null;
-  if (!svg) return null;
-
-  const measureIndex = Math.max(0, measures.indexOf(group.measure));
-  const systemIndex = Math.floor(measureIndex / MEASURES_PER_SYSTEM);
-  const columnIndex = measureIndex % MEASURES_PER_SYSTEM;
-  const rowMeasures = measures.slice(systemIndex * MEASURES_PER_SYSTEM, systemIndex * MEASURES_PER_SYSTEM + MEASURES_PER_SYSTEM);
-  const columns = Math.max(1, rowMeasures.length);
-  const beatRatio = Math.max(0, Math.min(1, ((group.beat || 1) - 1) / BEATS_PER_MEASURE));
-  const svgRect = svg.getBoundingClientRect();
-  const containerRect = container.getBoundingClientRect();
-  const svgWidth = svg.clientWidth || svgRect.width;
-  const svgHeight = svg.clientHeight || svgRect.height;
-  const systems = Math.max(1, Math.ceil(measures.length / MEASURES_PER_SYSTEM));
-  const systemHeight = svgHeight / systems;
-  const usableLeft = svgWidth * 0.12;
-  const usableWidth = svgWidth * 0.78;
-  const x = svgRect.left - containerRect.left + usableLeft + ((columnIndex + beatRatio) / columns) * usableWidth;
-  const y = svgRect.top - containerRect.top + systemIndex * systemHeight + systemHeight * 0.18;
-  const height = Math.max(120, Math.min(240, systemHeight * 0.62));
-
-  return {
-    left: `${Math.round(x)}px`,
-    top: `${Math.round(y)}px`,
-    height: `${Math.round(height)}px`,
-    width: "3px",
-  };
-}
-
-function applyPrintProgressLine(line: HTMLDivElement, style: CSSProperties | null) {
-  if (!style) {
-    line.style.display = "none";
-    return;
-  }
-
-  line.style.display = "block";
-  line.style.left = String(style.left ?? "0px");
-  line.style.top = String(style.top ?? "0px");
-  line.style.width = String(style.width ?? "3px");
-  line.style.height = String(style.height ?? "160px");
 }
 
 function normalizeCompareRange(
