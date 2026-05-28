@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { Edit3, Flag, Minus, MousePointer2, Plus, Save, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -37,6 +37,12 @@ type ScorePoint = {
   staffTop: number;
   staffBottom: number;
   measureRight: number;
+};
+type PrintCursorAnchor = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
 };
 type OsmdVoiceEntry = {
   notes: OsmdNote[];
@@ -85,6 +91,10 @@ const LEFT_PAD = 190;
 const RIGHT_PAD = 72;
 const NOTE_STEP = 4.15;
 const MEASURE_INSET = 46;
+const NOTE_HEAD_RX = 9.4;
+const NOTE_HEAD_RY = 6.2;
+const NOTE_STEM_LENGTH = 40;
+const NOTE_STEM_WIDTH = 2;
 const STAFF_LINE_COLOR = "#111827";
 const CLEF_X = LEFT_PAD - 148;
 const KEY_SIGNATURE_X = LEFT_PAD - 104;
@@ -136,7 +146,9 @@ export function ScoreViewer({
   onScoreSaved,
 }: ScoreViewerProps) {
   const printScrollRef = useRef<HTMLDivElement>(null);
+  const printLayerRef = useRef<HTMLDivElement>(null);
   const printContainerRef = useRef<HTMLDivElement>(null);
+  const printProgressLineRef = useRef<HTMLDivElement>(null);
   const editScrollRef = useRef<HTMLDivElement>(null);
   const editSvgRef = useRef<SVGSVGElement>(null);
   const osmdRef = useRef<OsmdInstance | null>(null);
@@ -419,11 +431,30 @@ export function ScoreViewer({
     return bestIndex;
   }
 
+  const hidePrintProgressLine = useCallback(() => {
+    const line = printProgressLineRef.current;
+    if (line) line.style.display = "none";
+  }, []);
+
+  const updatePrintProgressLine = useCallback(() => {
+    const line = printProgressLineRef.current;
+    const anchor = readOsmdCursorAnchor(osmdRef.current, printContainerRef.current, printLayerRef.current);
+    applyPrintProgressLine(line, anchor);
+  }, []);
+
+  const schedulePrintProgressLineUpdate = useCallback(() => {
+    updatePrintProgressLine();
+    window.requestAnimationFrame(updatePrintProgressLine);
+  }, [updatePrintProgressLine]);
+
   function syncPrintCursor(group: NoteGroup) {
     const osmd = osmdRef.current;
     if (!syncOsmdCursorToScorePosition(osmd, group.measure, group.beat)) {
       osmd?.cursor?.hide?.();
+      hidePrintProgressLine();
+      return;
     }
+    schedulePrintProgressLineUpdate();
   }
 
   function scrollPrintToIndex(index: number, behavior: ScrollBehavior) {
@@ -463,6 +494,7 @@ export function ScoreViewer({
 
   useEffect(() => {
     if (viewMode !== "print") {
+      hidePrintProgressLine();
       if (osmdRef.current) {
         osmdRef.current.clear?.();
         osmdRef.current = null;
@@ -493,7 +525,7 @@ export function ScoreViewer({
           drawPartNames: true,
           drawMeasureNumbers: true,
           drawingParameters: "default",
-          cursorsOptions: [{ type: 1, color: "#14b8a6", alpha: 0.7, follow: false }],
+          cursorsOptions: [{ type: 1, color: "#14b8a6", alpha: 1, follow: false }],
         }) as unknown as OsmdInstance;
 
         osmdRef.current = osmd;
@@ -516,7 +548,7 @@ export function ScoreViewer({
     return () => {
       cancelled = true;
     };
-  }, [viewMode, musicxmlUrl, printRevision]);
+  }, [viewMode, musicxmlUrl, printRevision, hidePrintProgressLine]);
 
   useEffect(() => {
     if (viewMode !== "print" || !colorMap || !osmdRef.current) return;
@@ -531,14 +563,17 @@ export function ScoreViewer({
     const osmd = osmdRef.current;
     if (!osmd || activeIndex < 0) {
       osmd?.cursor?.hide?.();
+      hidePrintProgressLine();
       return;
     }
     const group = draft[activeIndex];
     if (!group) return;
     if (!syncOsmdCursorToScorePosition(osmd, group.measure, group.beat)) {
       osmd.cursor?.hide?.();
+      hidePrintProgressLine();
       return;
     }
+    schedulePrintProgressLineUpdate();
     lastPrintActiveIndexRef.current = activeIndex;
 
     const scroller = printScrollRef.current;
@@ -549,7 +584,7 @@ export function ScoreViewer({
     const ratio = measureIndex / Math.max(1, localMeasures.length - 1);
     const top = ratio * Math.max(0, scroller.scrollHeight - scroller.clientHeight);
     scroller.scrollTo({ top: Math.max(0, top - 80), behavior: "auto" });
-  }, [viewMode, activeIndex, printReadyRevision, draft]);
+  }, [viewMode, activeIndex, printReadyRevision, draft, hidePrintProgressLine, schedulePrintProgressLineUpdate]);
 
   useEffect(() => {
     if (viewMode !== "edit") return;
@@ -778,10 +813,20 @@ export function ScoreViewer({
             正在播放：第 {activeGroup.measure} 小节 第 {activeGroup.beat} 拍 · {formatTargetNames(activeGroup)}
           </div>
         )}
-        <div
-          ref={printContainerRef}
-          className="min-h-full p-4 [&_svg]:h-auto [&_svg]:max-w-full"
-        />
+        <div ref={printLayerRef} className="relative min-h-full">
+          <div
+            ref={printProgressLineRef}
+            className="pointer-events-none absolute z-20 hidden rounded-full bg-teal-500 shadow-[0_0_0_2px_rgba(20,184,166,0.24),0_0_18px_rgba(20,184,166,0.38)]"
+          >
+            <span className="absolute -top-6 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-teal-300 bg-teal-50 px-2 py-0.5 text-[11px] font-medium text-teal-800">
+              播放
+            </span>
+          </div>
+          <div
+            ref={printContainerRef}
+            className="min-h-full p-4 [&_svg]:h-auto [&_svg]:max-w-full"
+          />
+        </div>
       </div>
       {viewMode === "edit" && (
         <div className="flex-1 min-h-0 flex flex-col">
@@ -898,10 +943,16 @@ export function ScoreViewer({
                 );
               })}
               {rangeStartPoint && (
-                <RangeMarker point={rangeStartPoint} label="起" color="#0f766e" />
+                <>
+                  <RepeatBarline point={rangeStartPoint} side="start" color="#0f766e" />
+                  <RangeMarker point={rangeStartPoint} label="起" color="#0f766e" />
+                </>
               )}
               {rangeEndPoint && (
-                <RangeMarker point={rangeEndPoint} label="终" color="#be123c" />
+                <>
+                  <RepeatBarline point={rangeEndPoint} side="end" color="#be123c" />
+                  <RangeMarker point={rangeEndPoint} label="终" color="#be123c" />
+                </>
               )}
               {playbackCursorPoint && (
                 <line
@@ -926,6 +977,7 @@ export function ScoreViewer({
                 const durationWidth = Math.max(18, (duration / (BEATS_PER_MEASURE * BEAT_SECONDS)) * (MEASURE_WIDTH - 82));
                 const accidentals = group.target_names.map((name, pitchIndex) => ({
                   accidental: accidentalForPitchName(name, scoreMetadata.keyFifths),
+                  name,
                   pitch: group.target_pitches[pitchIndex] ?? group.target_pitches[0] ?? 64,
                 }));
                 return (
@@ -962,26 +1014,26 @@ export function ScoreViewer({
                     />
                     {activeNote && (
                       <g>
-                        <circle cx={point.x} cy={point.y} r="25" fill="#ccfbf1" stroke="#0f766e" strokeWidth="2" opacity="0.58" />
+                        <circle cx={point.x} cy={point.y} r="17" fill="none" stroke="#0f766e" strokeWidth="2.2" opacity="0.72" />
                       </g>
                     )}
                     {ledgerLines(group, point).map((lineY) => (
                       <line
                         key={lineY}
-                        x1={point.x - 16}
-                        x2={point.x + 16}
+                        x1={point.x - NOTE_HEAD_RX - 6}
+                        x2={point.x + NOTE_HEAD_RX + 6}
                         y1={lineY}
                         y2={lineY}
                         stroke={STAFF_LINE_COLOR}
                         strokeWidth="1.2"
                       />
                     ))}
-                    {!isRest && accidentals.map(({ accidental, pitch }, pitchIndex) => (
+                    {!isRest && accidentals.map(({ accidental, name, pitch }, pitchIndex) => (
                       accidental ? (
                         <AccidentalGlyph
                           key={`${group.note_group_id}-accidental-${pitchIndex}`}
                           x={point.x - 32 - pitchIndex * 6}
-                          y={noteYForPitch(pitch, point.staffTop, point.staffBottom)}
+                          y={noteYForPitch(pitch, point.staffTop, point.staffBottom, name)}
                           accidental={accidental}
                           color={color}
                         />
@@ -1185,6 +1237,22 @@ function RangeMarker({ point, label, color }: { point: ScorePoint; label: string
   );
 }
 
+function RepeatBarline({ point, side, color }: { point: ScorePoint; side: "start" | "end"; color: string }) {
+  const staffTop = point.staffTop - 2;
+  const staffBottom = point.staffBottom + 2;
+  const thickX = side === "start" ? point.x + 4 : point.x - 4;
+  const thinX = side === "start" ? point.x - 3 : point.x + 3;
+  const dotX = side === "start" ? point.x + 15 : point.x - 15;
+  return (
+    <g pointerEvents="none">
+      <line x1={thinX} x2={thinX} y1={staffTop} y2={staffBottom} stroke={color} strokeWidth="1.7" />
+      <line x1={thickX} x2={thickX} y1={staffTop} y2={staffBottom} stroke={color} strokeWidth="4.2" strokeLinecap="round" />
+      <circle cx={dotX} cy={point.staffTop + STAFF_GAP * 1.5} r="3.2" fill={color} />
+      <circle cx={dotX} cy={point.staffTop + STAFF_GAP * 2.5} r="3.2" fill={color} />
+    </g>
+  );
+}
+
 function KeySignatureGlyphs({ x, yTop, fifths }: { x: number; yTop: number; fifths: number }) {
   const accidentals = keySignatureAccidentals(fifths);
   if (!accidentals.length) return null;
@@ -1251,8 +1319,8 @@ function NoteGlyph({
   const whole = beats >= 3.75;
   const open = beats >= 1.75;
   const flags = beats <= 0.28 ? 2 : beats <= 0.58 ? 1 : 0;
-  const stemX = stemDirection === "up" ? x + 8.5 : x - 8.5;
-  const stemEndY = stemDirection === "up" ? y - 48 : y + 48;
+  const stemX = stemDirection === "up" ? x + NOTE_HEAD_RX - 1.2 : x - NOTE_HEAD_RX + 1.2;
+  const stemEndY = stemDirection === "up" ? y - NOTE_STEM_LENGTH : y + NOTE_STEM_LENGTH;
   const flagSign = stemDirection === "up" ? 1 : -1;
 
   return (
@@ -1260,19 +1328,19 @@ function NoteGlyph({
       <ellipse
         cx={x}
         cy={y}
-        rx="10.5"
-        ry="7.2"
+        rx={NOTE_HEAD_RX}
+        ry={NOTE_HEAD_RY}
         transform={`rotate(-18 ${x} ${y})`}
         fill={open ? "#ffffff" : color}
         stroke={color}
-        strokeWidth={open ? 2.2 : 1.2}
+        strokeWidth={open ? 1.9 : 1.15}
       />
       {whole && (
         <ellipse
           cx={x}
           cy={y}
-          rx="5.2"
-          ry="2.8"
+          rx="4.8"
+          ry="2.4"
           transform={`rotate(-18 ${x} ${y})`}
           fill="none"
           stroke={color}
@@ -1280,18 +1348,18 @@ function NoteGlyph({
         />
       )}
       {!whole && (
-        <line x1={stemX} x2={stemX} y1={y} y2={stemEndY} stroke={color} strokeWidth="2.4" strokeLinecap="round" />
+        <line x1={stemX} x2={stemX} y1={y} y2={stemEndY} stroke={color} strokeWidth={NOTE_STEM_WIDTH} strokeLinecap="round" />
       )}
       {flags >= 1 && (
         <path
           d={
             stemDirection === "up"
-              ? `M ${stemX} ${stemEndY} C ${stemX + 25} ${stemEndY + 7}, ${stemX + 24} ${stemEndY + 25}, ${stemX + 4} ${stemEndY + 30}`
-              : `M ${stemX} ${stemEndY} C ${stemX - 25} ${stemEndY - 7}, ${stemX - 24} ${stemEndY - 25}, ${stemX - 4} ${stemEndY - 30}`
+              ? `M ${stemX} ${stemEndY} C ${stemX + 19} ${stemEndY + 6}, ${stemX + 19} ${stemEndY + 21}, ${stemX + 4} ${stemEndY + 25}`
+              : `M ${stemX} ${stemEndY} C ${stemX - 19} ${stemEndY - 6}, ${stemX - 19} ${stemEndY - 21}, ${stemX - 4} ${stemEndY - 25}`
           }
           fill="none"
           stroke={color}
-          strokeWidth="2.35"
+          strokeWidth="2"
           strokeLinecap="round"
         />
       )}
@@ -1299,12 +1367,12 @@ function NoteGlyph({
         <path
           d={
             stemDirection === "up"
-              ? `M ${stemX} ${stemEndY + 10 * flagSign} C ${stemX + 22} ${stemEndY + 17}, ${stemX + 22} ${stemEndY + 31}, ${stemX + 5} ${stemEndY + 36}`
-              : `M ${stemX} ${stemEndY + 10 * flagSign} C ${stemX - 22} ${stemEndY - 17}, ${stemX - 22} ${stemEndY - 31}, ${stemX - 5} ${stemEndY - 36}`
+              ? `M ${stemX} ${stemEndY + 9 * flagSign} C ${stemX + 17} ${stemEndY + 15}, ${stemX + 17} ${stemEndY + 27}, ${stemX + 5} ${stemEndY + 31}`
+              : `M ${stemX} ${stemEndY + 9 * flagSign} C ${stemX - 17} ${stemEndY - 15}, ${stemX - 17} ${stemEndY - 27}, ${stemX - 5} ${stemEndY - 31}`
           }
           fill="none"
           stroke={color}
-          strokeWidth="2.2"
+          strokeWidth="1.9"
           strokeLinecap="round"
         />
       )}
@@ -1315,24 +1383,24 @@ function NoteGlyph({
 function RestGlyph({ x, y, color, duration }: { x: number; y: number; color: string; duration: number }) {
   const beats = duration / BEAT_SECONDS;
   if (beats >= 3.75) {
-    return <rect x={x - 12} y={y - STAFF_GAP + 1} width="24" height="7" fill={color} rx="1.5" />;
+    return <rect x={x - 10} y={y - STAFF_GAP + 1} width="20" height="6" fill={color} rx="1.4" />;
   }
   if (beats >= 1.75) {
-    return <rect x={x - 12} y={y - 1} width="24" height="7" fill={color} rx="1.5" />;
+    return <rect x={x - 10} y={y - 1} width="20" height="6" fill={color} rx="1.4" />;
   }
   if (beats <= 0.58) {
     return (
-      <g fill="none" stroke={color} strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.4" filter="url(#note-shadow)">
-        <path d={`M ${x - 4} ${y - 28} C ${x + 10} ${y - 22}, ${x + 8} ${y - 9}, ${x - 4} ${y - 2} C ${x + 10} ${y + 5}, ${x + 8} ${y + 19}, ${x - 8} ${y + 28}`} />
-        <circle cx={x - 5} cy={y - 29} r="3.4" fill={color} stroke="none" />
-        {beats <= 0.28 && <circle cx={x - 1} cy={y - 5} r="3.2" fill={color} stroke="none" />}
+      <g fill="none" stroke={color} strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.1" filter="url(#note-shadow)">
+        <path d={`M ${x - 3} ${y - 24} C ${x + 9} ${y - 19}, ${x + 7} ${y - 8}, ${x - 4} ${y - 2} C ${x + 8} ${y + 4}, ${x + 7} ${y + 16}, ${x - 7} ${y + 24}`} />
+        <circle cx={x - 4} cy={y - 25} r="3" fill={color} stroke="none" />
+        {beats <= 0.28 && <circle cx={x - 1} cy={y - 5} r="2.8" fill={color} stroke="none" />}
       </g>
     );
   }
   return (
-    <g fill="none" stroke={color} strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.6" filter="url(#note-shadow)">
-      <path d={`M ${x - 5} ${y - 22} C ${x + 12} ${y - 13}, ${x + 10} ${y + 3}, ${x - 7} ${y + 12} C ${x + 6} ${y + 17}, ${x + 4} ${y + 26}, ${x - 7} ${y + 32}`} />
-      <circle cx={x - 5} cy={y - 22} r="3.6" fill={color} stroke="none" />
+    <g fill="none" stroke={color} strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2" filter="url(#note-shadow)">
+      <path d={`M ${x - 4} ${y - 20} C ${x + 10} ${y - 12}, ${x + 8} ${y + 2}, ${x - 6} ${y + 10} C ${x + 5} ${y + 15}, ${x + 4} ${y + 23}, ${x - 6} ${y + 28}`} />
+      <circle cx={x - 4} cy={y - 20} r="3.1" fill={color} stroke="none" />
     </g>
   );
 }
@@ -1428,7 +1496,7 @@ function notePoint(group: NoteGroup, measures: number[]) {
   const pitch = group.target_pitches[0] ?? 71;
   return {
     x,
-    y: noteYForPitch(pitch, staffTop, staffBottom),
+    y: noteYForPitch(pitch, staffTop, staffBottom, group.target_names[0]),
     staffTop,
     staffBottom,
     measureRight: measureStart + MEASURE_WIDTH,
@@ -1521,6 +1589,51 @@ function syncOsmdCursorToScorePosition(osmd: OsmdInstance | null, measure: numbe
   }
 }
 
+function readOsmdCursorAnchor(
+  osmd: OsmdInstance | null,
+  container: HTMLDivElement | null,
+  layer: HTMLDivElement | null,
+): PrintCursorAnchor | null {
+  if (!container || !layer) return null;
+  const element = findOsmdCursorElement(osmd, container);
+  if (!element) return null;
+
+  const rect = element.getBoundingClientRect();
+  const layerRect = layer.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return null;
+
+  return {
+    left: rect.left - layerRect.left,
+    top: rect.top - layerRect.top,
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
+function findOsmdCursorElement(osmd: OsmdInstance | null, container: HTMLDivElement): HTMLElement | null {
+  const directElement = osmd?.cursor?.cursorElement;
+  if (directElement?.isConnected) return directElement;
+
+  return Array.from(container.querySelectorAll<HTMLElement>("[id*='cursor' i], [class*='cursor' i]")).find((element) => {
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }) ?? null;
+}
+
+function applyPrintProgressLine(line: HTMLDivElement | null, anchor: PrintCursorAnchor | null) {
+  if (!line || !anchor) {
+    if (line) line.style.display = "none";
+    return;
+  }
+
+  const width = 4;
+  line.style.display = "block";
+  line.style.left = `${Math.round(anchor.left + anchor.width / 2 - width / 2)}px`;
+  line.style.top = `${Math.round(anchor.top)}px`;
+  line.style.width = `${width}px`;
+  line.style.height = `${Math.round(Math.max(72, anchor.height))}px`;
+}
+
 function normalizeCompareRange(
   range: [number, number] | undefined,
   groups: NoteGroup[],
@@ -1611,8 +1724,13 @@ function normalizeClientGroup(group: NoteGroup): NoteGroup {
   };
 }
 
-function noteYForPitch(midi: number, staffTop: number, staffBottom: number): number {
-  const y = staffBottom - (midi - 64) * NOTE_STEP;
+function noteYForPitch(midi: number, staffTop: number, staffBottom: number, name?: string): number {
+  const parsed = parsePitchName(name || midiToName(midi));
+  const stepIndex: Record<string, number> = { C: 0, D: 1, E: 2, F: 3, G: 4, A: 5, B: 6 };
+  const e4Index = 4 * 7 + stepIndex.E;
+  const y = parsed
+    ? staffBottom - ((parsed.octave * 7 + stepIndex[parsed.step]) - e4Index) * (STAFF_GAP / 2)
+    : staffBottom - (midi - 64) * NOTE_STEP;
   return Math.max(staffTop - 56, Math.min(staffBottom + 66, y));
 }
 
