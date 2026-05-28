@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { type PlaybackTimeline } from "@/lib/api";
@@ -22,9 +22,11 @@ type InstrumentProfile = {
 };
 
 export function PlaybackBar({ timeline, instrument = "violin", seekRequest, onTimeUpdate }: PlaybackBarProps) {
+  const initialBpm = Math.round(Math.max(1, timeline?.bpm ?? 120));
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
-  const [bpm, setBpm] = useState(120);
+  const [bpm, setBpm] = useState(initialBpm);
+  const [bpmText, setBpmText] = useState(String(initialBpm));
   const animRef = useRef<number | null>(null);
   const startRef = useRef<number>(0);
   const offsetRef = useRef<number>(0);
@@ -182,15 +184,34 @@ export function PlaybackBar({ timeline, instrument = "violin", seekRequest, onTi
     onTimeUpdate?.(t);
   }, [seekRequest, totalDuration, playing, onTimeUpdate, scheduleAudio]);
 
-  function handleBpmChange(value: string) {
-    const nextBpm = Math.max(40, Math.min(240, Math.round(Number(value) || baseBpm)));
+  function applyBpm(value: number) {
+    const nextBpm = Math.max(40, Math.min(240, Math.round(value)));
     const nextRate = nextBpm / baseBpm;
     rateRef.current = nextRate;
     setBpm(nextBpm);
+    setBpmText(String(nextBpm));
     offsetRef.current = currentTime;
     startRef.current = performance.now();
     if (playing) {
       void scheduleAudio(currentTime, nextRate);
+    }
+  }
+
+  function commitBpmText() {
+    const nextBpm = Number(bpmText);
+    if (!bpmText.trim() || !Number.isFinite(nextBpm)) {
+      setBpmText(String(bpm));
+      return;
+    }
+    applyBpm(nextBpm);
+  }
+
+  function handleBpmKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter") {
+      event.currentTarget.blur();
+    } else if (event.key === "Escape") {
+      setBpmText(String(bpm));
+      event.currentTarget.blur();
     }
   }
 
@@ -241,8 +262,10 @@ export function PlaybackBar({ timeline, instrument = "violin", seekRequest, onTi
           min={40}
           max={240}
           step={1}
-          value={bpm}
-          onChange={(event) => handleBpmChange(event.target.value)}
+          value={bpmText}
+          onChange={(event) => setBpmText(event.target.value)}
+          onBlur={commitBpmText}
+          onKeyDown={handleBpmKeyDown}
         />
       </label>
       <span className="text-xs text-muted-foreground">

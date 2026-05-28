@@ -1,8 +1,9 @@
 """ScoreService: MusicXML/MIDI parsing and export using music21."""
 from pathlib import Path
 from typing import Union
+import xml.etree.ElementTree as ET
 
-from music21 import chord, converter, duration, expressions, instrument, metadata, meter, note, pitch, stream
+from music21 import chord, converter, duration, expressions, instrument, key, metadata, meter, note, pitch, stream
 
 
 def _parse_score_object_to_note_groups(score, bpm: float = 120.0) -> list[dict]:
@@ -70,6 +71,76 @@ def _midi_name(midi_value: int) -> str:
     p = pitch.Pitch()
     p.midi = midi_value
     return p.nameWithOctave
+
+
+def _xml_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _child_text(element: ET.Element, child_name: str) -> str | None:
+    for child in element:
+        if _xml_name(child.tag) == child_name and child.text:
+            return child.text.strip()
+    return None
+
+
+def extract_musicxml_metadata(musicxml_path: Union[str, Path]) -> dict:
+    """Extract notation metadata that note_groups cannot represent."""
+    defaults = {
+        "key_fifths": 0,
+        "key_mode": "major",
+        "time_signature": "4/4",
+        "tempo": 120.0,
+    }
+    path = Path(musicxml_path)
+    if not path.exists():
+        return defaults
+
+    try:
+        root = ET.parse(path).getroot()
+    except ET.ParseError:
+        return defaults
+
+    data = dict(defaults)
+    found_key = False
+    found_time = False
+    found_tempo = False
+
+    for element in root.iter():
+        name = _xml_name(element.tag)
+        if name == "key" and not found_key:
+            fifths = _child_text(element, "fifths")
+            mode = _child_text(element, "mode")
+            if fifths is not None:
+                try:
+                    data["key_fifths"] = int(fifths)
+                except ValueError:
+                    pass
+            if mode:
+                data["key_mode"] = mode
+            found_key = True
+        elif name == "time" and not found_time:
+            beats = _child_text(element, "beats")
+            beat_type = _child_text(element, "beat-type")
+            if beats and beat_type:
+                data["time_signature"] = f"{beats}/{beat_type}"
+            found_time = True
+        elif name == "sound" and not found_tempo:
+            tempo_value = element.attrib.get("tempo")
+            if tempo_value:
+                try:
+                    data["tempo"] = float(tempo_value)
+                    found_tempo = True
+                except ValueError:
+                    pass
+        elif name == "per-minute" and not found_tempo and element.text:
+            try:
+                data["tempo"] = float(element.text.strip())
+                found_tempo = True
+            except ValueError:
+                pass
+
+    return data
 
 
 def _duration_to_quarter_length(start: float, end: float, bpm: float) -> float:
@@ -151,6 +222,8 @@ def build_score_from_note_groups(
     bpm: float = 120.0,
     title: str = "ScoreDiff Edited Score",
     instrument_name: str = "violin",
+    key_fifths: int = 0,
+    time_signature: str = "4/4",
 ):
     """Build a music21 score from editable note_group dictionaries."""
     score = stream.Score()
@@ -168,7 +241,8 @@ def build_score_from_note_groups(
     for measure_no in sorted(grouped):
         measure = stream.Measure(number=measure_no)
         if measure_no == 1:
-            measure.append(meter.TimeSignature("4/4"))
+            measure.append(key.KeySignature(int(key_fifths or 0)))
+            measure.append(meter.TimeSignature(time_signature or "4/4"))
 
         cadenza_measure = any("cadenza" in _split_note_type(group.get("type", ""))[1] for group in grouped[measure_no])
         cursor = 0.0
@@ -209,11 +283,28 @@ def export_note_groups_to_musicxml(
     bpm: float = 120.0,
     title: str = "ScoreDiff Edited Score",
     instrument_name: str = "violin",
+    key_fifths: int | None = None,
+    time_signature: str | None = None,
 ):
     """Export editable note_groups to a MusicXML file."""
-    score = build_score_from_note_groups(note_groups, bpm=bpm, title=title, instrument_name=instrument_name)
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    score.write("musicxml", fp=str(output_path))
+    output = Path(output_path)
+    if output.exists() and (key_fifths is None or time_signature is None):
+        existing_metadata = extract_musicxml_metadata(output)
+        if key_fifths is None:
+            key_fifths = int(existing_metadata["key_fifths"])
+        if time_signature is None:
+            time_signature = str(existing_metadata["time_signature"])
+
+    score = build_score_from_note_groups(
+        note_groups,
+        bpm=bpm,
+        title=title,
+        instrument_name=instrument_name,
+        key_fifths=key_fifths or 0,
+        time_signature=time_signature or "4/4",
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    score.write("musicxml", fp=str(output))
     return output_path
 
 

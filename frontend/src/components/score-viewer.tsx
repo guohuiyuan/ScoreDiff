@@ -49,6 +49,12 @@ type OsmdInstance = {
     update?: () => void;
   };
 };
+type ScoreDisplayMetadata = {
+  keyFifths: number;
+  keyMode: string;
+  timeSignature: string;
+  tempo: number | null;
+};
 
 const BEATS_PER_MEASURE = 4;
 const BEAT_SECONDS = 0.5;
@@ -57,11 +63,24 @@ const STAFF_GAP = 14;
 const MEASURES_PER_SYSTEM = 3;
 const SYSTEM_HEIGHT = 264;
 const MEASURE_WIDTH = 306;
-const LEFT_PAD = 118;
+const LEFT_PAD = 190;
 const RIGHT_PAD = 72;
 const NOTE_STEP = 4.15;
 const MEASURE_INSET = 46;
 const STAFF_LINE_COLOR = "#111827";
+const CLEF_X = LEFT_PAD - 148;
+const KEY_SIGNATURE_X = LEFT_PAD - 104;
+const TIME_SIGNATURE_X = LEFT_PAD - 24;
+const DEFAULT_SCORE_METADATA: ScoreDisplayMetadata = {
+  keyFifths: 0,
+  keyMode: "major",
+  timeSignature: "4/4",
+  tempo: null,
+};
+const SHARP_KEY_ORDER = ["F", "C", "G", "D", "A", "E", "B"];
+const FLAT_KEY_ORDER = ["B", "E", "A", "D", "G", "C", "F"];
+const SHARP_KEY_MIDIS = [77, 72, 79, 74, 69, 76, 71];
+const FLAT_KEY_MIDIS = [71, 76, 69, 74, 67, 72, 65];
 
 const DURATIONS = [
   { label: "32分", seconds: 0.0625 },
@@ -113,6 +132,7 @@ export function ScoreViewer({
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [scoreMetadata, setScoreMetadata] = useState<ScoreDisplayMetadata>(DEFAULT_SCORE_METADATA);
   const viewMode = musicxmlUrl ? mode : "edit";
 
   const measureNums = Array.from(new Set(draft.map((g) => g.measure || 1))).sort((a, b) => a - b);
@@ -126,6 +146,8 @@ export function ScoreViewer({
   const svgWidth = Math.max(900, LEFT_PAD + visibleColumns * MEASURE_WIDTH + RIGHT_PAD);
   const svgHeight = systemCount * SYSTEM_HEIGHT + 32;
   const activePoint = activeIndex >= 0 ? notePoint(draft[activeIndex], measures) : null;
+  const timeSignatureParts = splitTimeSignature(scoreMetadata.timeSignature);
+  const keySignatureText = keySignatureLabel(scoreMetadata.keyFifths, scoreMetadata.keyMode);
 
   function markDraft(next: NoteGroup[], nextSelectedId?: string | null) {
     const sorted = sortGroups(next.map(normalizeClientGroup));
@@ -373,6 +395,31 @@ export function ScoreViewer({
   }
 
   useEffect(() => {
+    let cancelled = false;
+    const url = fileUrl(musicxmlUrl);
+    if (!url) {
+      return;
+    }
+    const metadataUrl = url;
+
+    async function loadScoreMetadata() {
+      try {
+        const response = await fetch(metadataUrl, { cache: "no-store" });
+        if (!response.ok) throw new Error("metadata fetch failed");
+        const text = await response.text();
+        if (!cancelled) setScoreMetadata(parseMusicXmlMetadata(text));
+      } catch {
+        if (!cancelled) setScoreMetadata(DEFAULT_SCORE_METADATA);
+      }
+    }
+
+    void loadScoreMetadata();
+    return () => {
+      cancelled = true;
+    };
+  }, [musicxmlUrl, printRevision]);
+
+  useEffect(() => {
     if (viewMode !== "print") {
       if (osmdRef.current) {
         osmdRef.current.clear?.();
@@ -561,6 +608,19 @@ export function ScoreViewer({
             </div>
           )}
           {viewMode === "edit" && (
+            <div className="flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] text-slate-700">
+              <span>调号 {keySignatureText}</span>
+              <span className="text-slate-400">·</span>
+              <span>拍号 {scoreMetadata.timeSignature}</span>
+              {scoreMetadata.tempo && (
+                <>
+                  <span className="text-slate-400">·</span>
+                  <span>原速 {Math.round(scoreMetadata.tempo)} BPM</span>
+                </>
+              )}
+            </div>
+          )}
+          {viewMode === "edit" && (
             <div className="hidden md:flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50/70 px-2 py-1 text-[11px] text-amber-900">
               <span>{editMode === "note-input" ? "点击五线谱输入音符" : "拖动音符上下改变音高"}</span>
               <span className="text-amber-700">·</span>
@@ -585,7 +645,7 @@ export function ScoreViewer({
         <div className="flex items-center gap-2">
           {selected && viewMode === "edit" && (
             <span className="hidden rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-700 md:inline">
-              第 {selected.measure} 小节 · 第 {selected.beat} 拍 · {selected.target_names.join("/") || "休止"}
+              第 {selected.measure} 小节 · 第 {selected.beat} 拍 · {formatTargetNames(selected)}
             </span>
           )}
           {dirty && <span className="text-xs font-medium text-amber-700">未保存</span>}
@@ -621,7 +681,7 @@ export function ScoreViewer({
         )}
         {activeGroup && (
           <div className="sticky top-3 z-10 mx-auto mt-3 w-fit rounded-full border border-teal-500/40 bg-teal-50 px-3 py-1 text-xs font-medium text-teal-800 shadow-sm">
-            正在播放：第 {activeGroup.measure} 小节 第 {activeGroup.beat} 拍 · {activeGroup.target_names.join("/") || "休止"}
+            正在播放：第 {activeGroup.measure} 小节 第 {activeGroup.beat} 拍 · {formatTargetNames(activeGroup)}
           </div>
         )}
         <div ref={printContainerRef} className="min-h-full p-4" />
@@ -675,14 +735,15 @@ export function ScoreViewer({
                       fill="transparent"
                       onPointerDown={(event) => handleStaffPointerDown(event, systemIndex)}
                     />
-                    <text x={LEFT_PAD - 78} y={yTop + 43} fontSize="82" fill="#111827" fontFamily="Georgia, serif">
+                    <text x={CLEF_X} y={yTop + 43} fontSize="82" fill="#111827" fontFamily="Georgia, serif">
                       𝄞
                     </text>
-                    <text x={LEFT_PAD - 36} y={yTop + 20} fontSize="24" fontWeight="700" fill="#111827">
-                      4
+                    <KeySignatureGlyphs x={KEY_SIGNATURE_X} yTop={yTop} fifths={scoreMetadata.keyFifths} />
+                    <text x={TIME_SIGNATURE_X} y={yTop + 20} fontSize="24" fontWeight="700" fill="#111827">
+                      {timeSignatureParts[0]}
                     </text>
-                    <text x={LEFT_PAD - 36} y={yTop + 48} fontSize="24" fontWeight="700" fill="#111827">
-                      4
+                    <text x={TIME_SIGNATURE_X} y={yTop + 48} fontSize="24" fontWeight="700" fill="#111827">
+                      {timeSignatureParts[1]}
                     </text>
                     {Array.from({ length: 5 }).map((_, line) => (
                       <line
@@ -759,6 +820,10 @@ export function ScoreViewer({
                 const isRest = noteBaseType(group.type) === "rest" || group.target_pitches.length === 0;
                 const duration = noteDuration(group);
                 const durationWidth = Math.max(18, (duration / (BEATS_PER_MEASURE * BEAT_SECONDS)) * (MEASURE_WIDTH - 82));
+                const accidentals = group.target_names.map((name, pitchIndex) => ({
+                  accidental: accidentalForPitchName(name, scoreMetadata.keyFifths),
+                  pitch: group.target_pitches[pitchIndex] ?? group.target_pitches[0] ?? 64,
+                }));
                 return (
                   <g
                     key={`${group.note_group_id}-${index}`}
@@ -808,6 +873,17 @@ export function ScoreViewer({
                         strokeWidth="1.2"
                       />
                     ))}
+                    {!isRest && accidentals.map(({ accidental, pitch }, pitchIndex) => (
+                      accidental ? (
+                        <AccidentalGlyph
+                          key={`${group.note_group_id}-accidental-${pitchIndex}`}
+                          x={point.x - 32 - pitchIndex * 6}
+                          y={noteYForPitch(pitch, point.staffTop, point.staffBottom)}
+                          accidental={accidental}
+                          color={color}
+                        />
+                      ) : null
+                    ))}
                     {isRest ? (
                       <RestGlyph x={point.x} y={point.staffTop + STAFF_GAP * 2} color={color} duration={duration} />
                     ) : (
@@ -838,7 +914,7 @@ export function ScoreViewer({
                       fill={selectedNote ? "#1d4ed8" : "#6b7280"}
                       fontWeight={selectedNote ? "700" : "500"}
                     >
-                      {isRest ? "休止" : group.target_names.join("/")}
+                      {formatTargetNames(group)}
                     </text>
                   </g>
                 );
@@ -973,6 +1049,55 @@ export function ScoreViewer({
           </div>
       )}
     </div>
+  );
+}
+
+function KeySignatureGlyphs({ x, yTop, fifths }: { x: number; yTop: number; fifths: number }) {
+  const accidentals = keySignatureAccidentals(fifths);
+  if (!accidentals.length) return null;
+
+  return (
+    <g aria-label="调号">
+      {accidentals.map((accidental, index) => (
+        <text
+          key={`${accidental.step}-${index}`}
+          x={x + index * 9}
+          y={noteYForPitch(accidental.midi, yTop, yTop + STAFF_GAP * 4) + 7}
+          fontSize="25"
+          fontFamily="Georgia, serif"
+          fontWeight="700"
+          fill="#111827"
+        >
+          {accidental.symbol}
+        </text>
+      ))}
+    </g>
+  );
+}
+
+function AccidentalGlyph({
+  x,
+  y,
+  accidental,
+  color,
+}: {
+  x: number;
+  y: number;
+  accidental: string;
+  color: string;
+}) {
+  return (
+    <text
+      x={x}
+      y={y + 7}
+      fontSize="24"
+      fontFamily="Georgia, serif"
+      fontWeight="700"
+      fill={color}
+      pointerEvents="none"
+    >
+      {accidental}
+    </text>
   );
 }
 
@@ -1168,10 +1293,9 @@ function notePoint(group: NoteGroup, measures: number[]) {
   const staffTop = systemTop(systemIndex);
   const staffBottom = systemBottom(systemIndex);
   const pitch = group.target_pitches[0] ?? 71;
-  const y = staffBottom - (pitch - 64) * NOTE_STEP;
   return {
     x,
-    y: Math.max(staffTop - 56, Math.min(staffBottom + 66, y)),
+    y: noteYForPitch(pitch, staffTop, staffBottom),
     staffTop,
     staffBottom,
     measureRight: measureStart + MEASURE_WIDTH,
@@ -1205,7 +1329,12 @@ function normalizeClientGroup(group: NoteGroup): NoteGroup {
   const rawDuration = Math.max(0.0625, Number(group.end) - Number(group.start) || BEAT_SECONDS);
   const end = noteEndFor(measure, start, rawDuration);
   const pitches = (group.target_pitches || []).map((p) => Math.max(21, Math.min(108, Number(p) || 69)));
-  const names = pitches.length ? pitches.map(midiToName) : [];
+  const sourceNames = Array.isArray(group.target_names) ? group.target_names : [];
+  const names = pitches.map((midi, index) => {
+    const sourceName = String(sourceNames[index] ?? "").trim();
+    const parsed = parsePitchName(sourceName);
+    return parsed?.midi === midi ? sourceName : midiToName(midi);
+  });
   const baseType = pitches.length === 0 ? "rest" : pitches.length === 1 ? "single_note" : pitches.length === 2 ? "double_stop" : "chord";
   const type = composeNoteType(baseType, noteModifiers(group.type));
   return {
@@ -1218,6 +1347,11 @@ function normalizeClientGroup(group: NoteGroup): NoteGroup {
     target_names: names,
     type,
   };
+}
+
+function noteYForPitch(midi: number, staffTop: number, staffBottom: number): number {
+  const y = staffBottom - (midi - 64) * NOTE_STEP;
+  return Math.max(staffTop - 56, Math.min(staffBottom + 66, y));
 }
 
 function sortGroups(groups: NoteGroup[]) {
@@ -1255,6 +1389,133 @@ function midiToName(midi: number): string {
   const pitchClass = ((midi % 12) + 12) % 12;
   const octave = Math.floor(midi / 12) - 1;
   return `${names[pitchClass]}${octave}`;
+}
+
+function parsePitchName(name: string): { step: string; alter: number; octave: number; midi: number } | null {
+  const match = String(name).trim().replace(/\s+/g, "").match(/^([A-Ga-g])([#♯b♭-]*)(-?\d+)$/);
+  if (!match) return null;
+
+  const step = match[1].toUpperCase();
+  const octave = Number(match[3]);
+  if (!Number.isFinite(octave)) return null;
+
+  let alter = 0;
+  for (const char of match[2]) {
+    if (char === "#" || char === "♯") alter += 1;
+    if (char === "b" || char === "♭" || char === "-") alter -= 1;
+  }
+
+  const baseSemitones: Record<string, number> = {
+    C: 0,
+    D: 2,
+    E: 4,
+    F: 5,
+    G: 7,
+    A: 9,
+    B: 11,
+  };
+  return {
+    step,
+    alter,
+    octave,
+    midi: (octave + 1) * 12 + baseSemitones[step] + alter,
+  };
+}
+
+function formatPitchName(name: string): string {
+  const parsed = parsePitchName(name);
+  if (!parsed) return name;
+  const accidental = parsed.alter > 0 ? "♯".repeat(parsed.alter) : "♭".repeat(Math.abs(parsed.alter));
+  return `${parsed.step}${accidental}${parsed.octave}`;
+}
+
+function formatTargetNames(group: NoteGroup): string {
+  if (noteBaseType(group.type) === "rest" || !group.target_names.length) return "休止";
+  return group.target_names.map(formatPitchName).join("/");
+}
+
+function keyAlterationMap(fifths: number): Record<string, number> {
+  const map: Record<string, number> = {};
+  const count = Math.min(7, Math.abs(Math.round(fifths)));
+  const order = fifths >= 0 ? SHARP_KEY_ORDER : FLAT_KEY_ORDER;
+  const alter = fifths >= 0 ? 1 : -1;
+  for (let i = 0; i < count; i++) {
+    map[order[i]] = alter;
+  }
+  return map;
+}
+
+function accidentalForPitchName(name: string, keyFifths: number): string | null {
+  const parsed = parsePitchName(name);
+  if (!parsed) return null;
+  const keyAlter = keyAlterationMap(keyFifths)[parsed.step] ?? 0;
+  if (parsed.alter === keyAlter) return null;
+  if (parsed.alter === 0) return "♮";
+  return parsed.alter > 0 ? "♯".repeat(parsed.alter) : "♭".repeat(Math.abs(parsed.alter));
+}
+
+function keySignatureAccidentals(fifths: number) {
+  const rounded = Math.round(fifths);
+  const count = Math.min(7, Math.abs(rounded));
+  if (count === 0) return [];
+  const sharp = rounded > 0;
+  const steps = sharp ? SHARP_KEY_ORDER : FLAT_KEY_ORDER;
+  const midis = sharp ? SHARP_KEY_MIDIS : FLAT_KEY_MIDIS;
+  return steps.slice(0, count).map((step, index) => ({
+    step,
+    midi: midis[index],
+    symbol: sharp ? "♯" : "♭",
+  }));
+}
+
+function keySignatureLabel(fifths: number, mode: string): string {
+  const majorKeys = ["C♭", "G♭", "D♭", "A♭", "E♭", "B♭", "F", "C", "G", "D", "A", "E", "B", "F♯", "C♯"];
+  const minorKeys = ["A♭", "E♭", "B♭", "F", "C", "G", "D", "A", "E", "B", "F♯", "C♯", "G♯", "D♯", "A♯"];
+  const index = Math.max(0, Math.min(14, Math.round(fifths) + 7));
+  const isMinor = mode.toLowerCase() === "minor";
+  const name = isMinor ? minorKeys[index] : majorKeys[index];
+  const count = Math.abs(Math.round(fifths));
+  const accidentalText = count ? ` (${count}${fifths > 0 ? "♯" : "♭"})` : "";
+  return `${name}${isMinor ? "小调" : "大调"}${accidentalText}`;
+}
+
+function splitTimeSignature(value: string): [string, string] {
+  const [beats, beatType] = value.split("/");
+  return [beats || "4", beatType || "4"];
+}
+
+function parseMusicXmlMetadata(text: string): ScoreDisplayMetadata {
+  const metadata = { ...DEFAULT_SCORE_METADATA };
+  const document = new DOMParser().parseFromString(text, "application/xml");
+  if (document.querySelector("parsererror")) return metadata;
+
+  const keyElement = firstElementByLocalName(document, "key");
+  const fifths = keyElement ? childTextByLocalName(keyElement, "fifths") : null;
+  const mode = keyElement ? childTextByLocalName(keyElement, "mode") : null;
+  if (fifths !== null && Number.isFinite(Number(fifths))) metadata.keyFifths = Number(fifths);
+  if (mode) metadata.keyMode = mode;
+
+  const timeElement = firstElementByLocalName(document, "time");
+  const beats = timeElement ? childTextByLocalName(timeElement, "beats") : null;
+  const beatType = timeElement ? childTextByLocalName(timeElement, "beat-type") : null;
+  if (beats && beatType) metadata.timeSignature = `${beats}/${beatType}`;
+
+  const soundElement = firstElementByLocalName(document, "sound");
+  const soundTempo = soundElement?.getAttribute("tempo");
+  const metronomeTempo = childTextByLocalName(document, "per-minute");
+  const tempo = Number(soundTempo ?? metronomeTempo);
+  if (Number.isFinite(tempo) && tempo > 0) metadata.tempo = tempo;
+
+  return metadata;
+}
+
+function firstElementByLocalName(root: ParentNode, localName: string): Element | null {
+  return Array.from(root.querySelectorAll("*")).find((element) => element.localName === localName) ?? null;
+}
+
+function childTextByLocalName(root: ParentNode, localName: string): string | null {
+  const element = firstElementByLocalName(root, localName);
+  return element?.textContent?.trim() || null;
 }
 
 function closestDuration(seconds: number): number {
