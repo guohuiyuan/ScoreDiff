@@ -78,7 +78,18 @@ class RecordingService:
                 "subtype": info.subtype,
             }
         except Exception:
-            return None
+            try:
+                duration = librosa.get_duration(path=str(path))
+                return {
+                    "sample_rate": None,
+                    "channels": None,
+                    "duration_seconds": round(float(duration), 3),
+                    "frames": None,
+                    "format": path.suffix.lstrip(".").upper(),
+                    "subtype": None,
+                }
+            except Exception:
+                return None
 
     def convert_to_wav(self, audio_path: Union[str, Path]) -> Optional[Path]:
         path = Path(audio_path)

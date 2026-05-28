@@ -207,6 +207,81 @@ def _analysis_note_groups(
     return _scale_note_group_times(selected, scale), segment
 
 
+def _clip_analysis_to_audio_duration(
+    note_groups: list[dict],
+    segment: dict,
+    audio_path: str | Path,
+) -> tuple[list[dict], dict]:
+    audio_info = RecordingService().get_audio_info(audio_path)
+    audio_duration = float(audio_info["duration_seconds"]) if audio_info else 0.0
+    segment_duration = float(segment.get("duration") or 0.0)
+    if audio_duration <= 0 or segment_duration <= 0 or audio_duration >= segment_duration - 0.05:
+        return note_groups, segment
+
+    clipped: list[dict] = []
+    for group in note_groups:
+        group_start = float(group.get("start") or 0.0)
+        group_end = float(group.get("end") or group_start)
+        if group_start >= audio_duration or group_end <= 0:
+            continue
+
+        next_group = dict(group)
+        next_group["start"] = round(max(0.0, group_start), 4)
+        next_group["end"] = round(min(group_end, audio_duration), 4)
+        if next_group["end"] > next_group["start"]:
+            clipped.append(next_group)
+
+    if not clipped:
+        return note_groups, segment
+
+    bpm = float(segment.get("bpm") or BASE_SCORE_BPM)
+    scale = _time_scale_for_bpm(bpm)
+    next_segment = dict(segment)
+    next_segment["duration"] = round(audio_duration, 4)
+    next_segment["end"] = round(float(segment["start"]) + audio_duration / scale, 4)
+    next_segment["note_count"] = len([g for g in clipped if g.get("type", "").split(":")[0] != "rest"])
+    return clipped, next_segment
+
+
+def _drop_leading_score_rests_for_audio_alignment(
+    note_groups: list[dict],
+    segment: dict,
+) -> tuple[list[dict], dict]:
+    first_note_start = min(
+        (
+            float(group.get("start") or 0.0)
+            for group in note_groups
+            if group.get("type", "").split(":")[0] != "rest"
+        ),
+        default=0.0,
+    )
+    if first_note_start <= 0.05:
+        return note_groups, segment
+
+    adjusted: list[dict] = []
+    for group in note_groups:
+        group_start = float(group.get("start") or 0.0)
+        group_end = float(group.get("end") or group_start)
+        if group_end <= first_note_start:
+            continue
+
+        next_group = dict(group)
+        next_group["start"] = round(max(0.0, group_start - first_note_start), 4)
+        next_group["end"] = round(group_end - first_note_start, 4)
+        adjusted.append(next_group)
+
+    if not adjusted:
+        return note_groups, segment
+
+    bpm = float(segment.get("bpm") or BASE_SCORE_BPM)
+    scale = _time_scale_for_bpm(bpm)
+    next_segment = dict(segment)
+    next_segment["start"] = round(float(segment["start"]) + first_note_start / scale, 4)
+    next_segment["duration"] = round(max(0.0, float(segment.get("duration") or 0.0) - first_note_start), 4)
+    next_segment["note_count"] = len([g for g in adjusted if g.get("type", "").split(":")[0] != "rest"])
+    return adjusted, next_segment
+
+
 def _selected_original_groups(note_groups: list[dict], result_ids: set[str]) -> list[dict]:
     return [group for group in note_groups if group.get("note_group_id") in result_ids]
 
@@ -702,6 +777,8 @@ async def analyze_performance(
     selected_groups, segment = _analysis_note_groups(note_groups, segment_start, segment_end, bpm)
 
     if mode == "real":
+        selected_groups, segment = _drop_leading_score_rests_for_audio_alignment(selected_groups, segment)
+        selected_groups, segment = _clip_analysis_to_audio_duration(selected_groups, segment, perf.audio_path)
         scoring = generate_real_scoring(perf.audio_path, selected_groups, performance_id)
     else:
         scoring = generate_mock_scoring(selected_groups, performance_id)
@@ -776,6 +853,8 @@ async def _run_analysis_task(
         try:
             selected_groups, segment = _analysis_note_groups(note_groups, segment_start, segment_end, bpm)
             if mode == "real":
+                selected_groups, segment = _drop_leading_score_rests_for_audio_alignment(selected_groups, segment)
+                selected_groups, segment = _clip_analysis_to_audio_duration(selected_groups, segment, perf.audio_path)
                 scoring = generate_real_scoring(perf.audio_path, selected_groups, performance_id)
             else:
                 scoring = generate_mock_scoring(selected_groups, performance_id)
